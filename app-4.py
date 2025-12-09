@@ -1,7 +1,7 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
 # QUB Edition – With PDF Export
-# FULL APP – DEC 2025 RELEASE (UPDATED WITH NUMBERED CITATIONS)
+# FULL APP – DEC 2025 RELEASE (UPDATED WITH CAREFUL NUMBERED CITATIONS)
 #############################################################
 
 import streamlit as st
@@ -153,7 +153,7 @@ def generate_pdf(title, avg_sim, citation_cov, keyword_score, verdict, gpt_eval)
 
 # ==========================================================
 # UPDATED GPT EVALUATION FUNCTION
-# WITH NUMBERED CITATIONS + REFERENCES LIST
+# WITH CAREFUL NUMBERED CITATIONS + QUALITY CHECKS
 # ==========================================================
 def gpt_evaluate_json(title, gap, refs, top10_text):
     prompt = f"""
@@ -164,10 +164,20 @@ Rewrite the student's research gap using ONLY the Top-Matched Literature provide
 REQUIREMENTS FOR THE REWRITTEN GAP:
 - Length must be 250–320 words.
 - Must integrate findings, limitations, and methods from the provided abstracts.
-- Use NUMBERED citations in this format: (1), (2), (3).
-- Numbers must match the order of the Top-Matched Literature.
-- Must sound academic, critical, and evidence-based.
-- Do NOT mention authors or years, only numbered citations.
+- You MUST use at least SIX different numbered citations.
+- Use NUMBERED citations in this precise format: (1), (2), (3).
+- Numbers MUST match the order of the Top-Matched Literature exactly.
+- Writing MUST be academically strong, critical, and evidence-driven.
+- Do NOT mention authors or years.
+- Do NOT generalise or guess content. Only cite what clearly appears in a provided abstract.
+
+CITATION QUALITY RULES:
+- Every citation MUST support the sentence it is attached to.
+- Do NOT cite a paper unless the content of its abstract explicitly supports that claim.
+- You MUST check the abstract content before using a citation.
+- Distribute citations across the rewritten gap logically.
+- Avoid over-citing the same source.
+- Avoid invented, implied, or fabricated findings.
 
 Your JSON RESPONSE MUST FOLLOW THIS EXACT STRUCTURE:
 
@@ -191,22 +201,20 @@ Top-Matched Literature (use these as numbered citations):
 {top10_text}
 
 IMPORTANT:
-- For each citation in the rewritten gap, use (1), (2), etc.
 - "references_list" MUST contain the exact titles of the top-matched papers in order.
 """
-
     resp = client.chat.completions.create(
         model="gpt-4.1",
         temperature=0,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=3000
+        max_tokens=3200
     )
 
     content = resp.choices[0].message.content
 
     try:
         parsed = json.loads(content)
-    except Exception:
+    except:
         parsed = {
             "title_comment": "JSON formatting error.",
             "clarity_comment": "Error.",
@@ -233,7 +241,7 @@ if st.button("Evaluate Research Gap"):
 
         full_text = title_input + " " + gap_input + " " + refs_input
         embed = client.embeddings.create(
-            model="text-embedding-3-small", 
+            model="text-embedding-3-small",
             input=[full_text]
         )
         query_vec = np.array(embed.data[0].embedding)
