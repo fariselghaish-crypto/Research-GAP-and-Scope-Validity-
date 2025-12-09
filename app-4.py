@@ -238,8 +238,13 @@ if st.button("Evaluate Research Gap"):
         overlap = set(gap_kw.index).intersection(lit_kw.index)
         keyword_score = int(len(overlap) / max(len(gap_kw.index), 1) * 20)
 
-        # ===== GPT Evaluation =====
-        gpt_eval = gpt_evaluate_json(title_input, gap_input, refs_input, "\n".join(top10["Title"]))
+        # ===== GPT Evaluation (UPDATED TO USE ABSTRACTS)
+        top10_text = "\n\n".join([
+            f"TITLE: {row['Title']}\nABSTRACT: {row['Abstract']}"
+            for _, row in top10.iterrows()
+        ])
+
+        gpt_eval = gpt_evaluate_json(title_input, gap_input, refs_input, top10_text)
 
         # ===== Final Score =====
         clarity_score = 15
