@@ -1,5 +1,5 @@
 streamlit
 openai
-numpy
 pandas
-reportlab==3.6.12
+numpy
+reportlab
