@@ -1,7 +1,7 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
 # QUB Edition – With PDF Export
-# FULL APP – DEC 2025 RELEASE
+# FULL APP – DEC 2025 RELEASE (UPDATED WITH NUMBERED CITATIONS)
 #############################################################
 
 import streamlit as st
@@ -151,11 +151,25 @@ def generate_pdf(title, avg_sim, citation_cov, keyword_score, verdict, gpt_eval)
     buffer.seek(0)
     return buffer
 
+# ==========================================================
+# UPDATED GPT EVALUATION FUNCTION
+# WITH NUMBERED CITATIONS + REFERENCES LIST
+# ==========================================================
 def gpt_evaluate_json(title, gap, refs, top10_text):
     prompt = f"""
 You are an academic supervisor evaluating a dissertation research gap.
 
-Return ONLY valid JSON in this exact format:
+Rewrite the student's research gap using ONLY the Top-Matched Literature provided.
+
+REQUIREMENTS FOR THE REWRITTEN GAP:
+- Length must be 250–320 words.
+- Must integrate findings, limitations, and methods from the provided abstracts.
+- Use NUMBERED citations in this format: (1), (2), (3).
+- Numbers must match the order of the Top-Matched Literature.
+- Must sound academic, critical, and evidence-based.
+- Do NOT mention authors or years, only numbered citations.
+
+Your JSON RESPONSE MUST FOLLOW THIS EXACT STRUCTURE:
 
 {{
 "title_comment": "",
@@ -164,7 +178,8 @@ Return ONLY valid JSON in this exact format:
 "originality_comment": "",
 "weaknesses": [],
 "suggestions": [],
-"rewritten_gap": ""
+"rewritten_gap": "",
+"references_list": []
 }}
 
 Student Input:
@@ -172,24 +187,26 @@ Title: {title}
 Research Gap: {gap}
 References: {refs}
 
-Top-Matched Literature:
+Top-Matched Literature (use these as numbered citations):
 {top10_text}
 
-Provide precise, academic, evidence-based feedback.
+IMPORTANT:
+- For each citation in the rewritten gap, use (1), (2), etc.
+- "references_list" MUST contain the exact titles of the top-matched papers in order.
 """
 
     resp = client.chat.completions.create(
         model="gpt-4.1",
-        temperature=0.0,
+        temperature=0,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=2000
+        max_tokens=3000
     )
 
     content = resp.choices[0].message.content
 
     try:
         parsed = json.loads(content)
-    except:
+    except Exception:
         parsed = {
             "title_comment": "JSON formatting error.",
             "clarity_comment": "Error.",
@@ -197,7 +214,8 @@ Provide precise, academic, evidence-based feedback.
             "originality_comment": "Error.",
             "weaknesses": [],
             "suggestions": [],
-            "rewritten_gap": gap
+            "rewritten_gap": gap,
+            "references_list": []
         }
     return parsed
 
@@ -214,7 +232,10 @@ if st.button("Evaluate Research Gap"):
     with st.spinner("Processing evaluation..."):
 
         full_text = title_input + " " + gap_input + " " + refs_input
-        embed = client.embeddings.create(model="text-embedding-3-small", input=[full_text])
+        embed = client.embeddings.create(
+            model="text-embedding-3-small", 
+            input=[full_text]
+        )
         query_vec = np.array(embed.data[0].embedding)
 
         df1["similarity"] = [compute_similarity(query_vec, v) for v in embeddings[:len(df1)]]
@@ -238,10 +259,10 @@ if st.button("Evaluate Research Gap"):
         overlap = set(gap_kw.index).intersection(lit_kw.index)
         keyword_score = int(len(overlap) / max(len(gap_kw.index), 1) * 20)
 
-        # ===== GPT Evaluation (UPDATED TO USE ABSTRACTS)
+        # ===== GPT Evaluation (UPDATED)
         top10_text = "\n\n".join([
-            f"TITLE: {row['Title']}\nABSTRACT: {row['Abstract']}"
-            for _, row in top10.iterrows()
+            f"({idx+1}) TITLE: {row['Title']}\nABSTRACT: {row['Abstract']}"
+            for idx, (_, row) in enumerate(top10.iterrows())
         ])
 
         gpt_eval = gpt_evaluate_json(title_input, gap_input, refs_input, top10_text)
@@ -283,7 +304,12 @@ if st.button("Evaluate Research Gap"):
         # ==================================================
         # TABS
         # ==================================================
-        tab1, tab2, tab3, tab4 = st.tabs(["Top Literature", "GPT Evaluation", "Weaknesses", "Rewritten Gap"])
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "Top Literature",
+            "GPT Evaluation",
+            "Weaknesses",
+            "Rewritten Gap"
+        ])
 
         with tab1:
             st.dataframe(top10[["Title", "Year", "DOI", "similarity"]])
@@ -311,12 +337,24 @@ if st.button("Evaluate Research Gap"):
             st.subheader("Rewritten Research Gap")
             st.write(gpt_eval["rewritten_gap"])
 
+            st.markdown("---")
+            st.subheader("References Used in Rewritten Gap")
+            if "references_list" in gpt_eval:
+                for ref in gpt_eval["references_list"]:
+                    st.markdown(f"- {ref}")
+            else:
+                st.info("No reference list returned.")
+
         # ==================================================
         # PDF DOWNLOAD
         # ==================================================
         pdf_buffer = generate_pdf(
-            title_input, avg_sim, f"{match_count}/{len(ref_lines)}",
-            keyword_score, verdict, gpt_eval
+            title_input,
+            avg_sim,
+            f"{match_count}/{len(ref_lines)}",
+            keyword_score,
+            verdict,
+            gpt_eval
         )
 
         st.download_button(
