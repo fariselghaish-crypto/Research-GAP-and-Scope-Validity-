@@ -78,7 +78,7 @@ st.markdown(f"""
 #############################
 st.sidebar.header("Upload Dataset")
 
-CSV_PATH = st.sidebar.file_uploader("Upload bert_documents_enriched.csv", type=["csv"])
+CSV_PATH = st.sidebar.file_uploader("Upload bert_documents_enriched.parquet", type=["parquet"])
 api_key = st.sidebar.text_input("OpenAI API Key", type="password")
 
 client = OpenAI(api_key=api_key) if api_key else None
