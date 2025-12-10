@@ -1,6 +1,7 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# FINAL VERSION – QUB BRANDING + SIMILARITY + APA + GPT
+# FINAL FIXED VERSION – using OpenAI embeddings (3072 dims)
+# FULL WORKING APP
 #############################################################
 
 import streamlit as st
@@ -12,7 +13,6 @@ from io import BytesIO
 from openai import OpenAI
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
-from sentence_transformers import SentenceTransformer
 
 #############################################################
 # PAGE CONFIG – QUB BRANDING
@@ -24,7 +24,7 @@ QUB_DARK = "#002147"
 QUB_LIGHT = "#F5F5F5"
 
 #############################################################
-# CSS – UI STYLING
+# CSS
 #############################################################
 st.markdown(f"""
 <style>
@@ -77,7 +77,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 #############################################################
-# SIDEBAR – FILE UPLOADS
+# SIDEBAR
 #############################################################
 st.sidebar.header("Upload Required Files")
 
@@ -87,7 +87,7 @@ SCOPUS = st.sidebar.file_uploader("Upload Scopus.csv", type=["csv"])
 api_key = st.sidebar.text_input("Enter OpenAI API Key", type="password")
 
 style_choice = st.sidebar.selectbox(
-    "Journal Style for Rewrite",
+    "Journal Style for Rewriting",
     ["Automation in Construction", "ECAM", "ITcon"]
 )
 
@@ -101,11 +101,7 @@ client = OpenAI(api_key=api_key)
 # LOADERS
 #############################################################
 @st.cache_resource
-def load_sbert():
-    return SentenceTransformer("all-mpnet-base-v2")
-
-@st.cache_resource
-def load_data(parquet_file, emb_file):
+def load_docs(parquet_file, emb_file):
     df = pd.read_parquet(parquet_file).fillna("")
     emb = np.load(emb_file)
     return df, emb
@@ -122,7 +118,7 @@ def load_scopus(csv_file):
     except:
         pass
 
-    # Try Latin-1
+    # Try ISO-8859-1
     try:
         df = pd.read_csv(BytesIO(raw), encoding="iso-8859-1", low_memory=False)
         df.columns = [c.strip() for c in df.columns]
@@ -143,12 +139,21 @@ def load_scopus(csv_file):
     df.columns = [c.strip() for c in df.columns]
     return df
 
-sbert = load_sbert()
-df_docs, embeddings = load_data(PARQUET, EMB_PATH)
+df_docs, embeddings = load_docs(PARQUET, EMB_PATH)
 df_scopus = load_scopus(SCOPUS)
 
 #############################################################
-# HELPERS – APA BUILDER
+# OPENAI EMBEDDING (3072 dims)
+#############################################################
+def embed_query(text):
+    resp = client.embeddings.create(
+        model="text-embedding-3-large",
+        input=text
+    )
+    return np.array(resp.data[0].embedding)
+
+#############################################################
+# APA REFERENCE BUILDER
 #############################################################
 def build_apa(row):
     authors = row.get("Authors", "")
@@ -181,16 +186,15 @@ def build_apa(row):
     return apa
 
 #############################################################
-# SIMILARITY – FAST VECTORIZED
+# VECTORISED SIMILARITY
 #############################################################
 def vector_similarity(query_vec, emb_matrix):
     qn = np.linalg.norm(query_vec)
     dn = np.linalg.norm(emb_matrix, axis=1)
-    sim = emb_matrix @ query_vec / (dn * qn + 1e-9)
-    return sim
+    return emb_matrix @ query_vec / (dn * qn + 1e-9)
 
 #############################################################
-# GPT ENGINE
+# GPT REVIEW ENGINE
 #############################################################
 def gpt_review(title, gap, refs, top10_titles, style_choice):
     prompt = f"""
@@ -208,8 +212,8 @@ TASKS:
    - Significance
    - Clarity
    - Citation coverage
-3. Give critical comments.
-4. Rewrite the research gap in 300+ words using academic journal style and grounded in the top 10 papers.
+3. Provide 4-6 critical comments.
+4. Rewrite the research gap in 300+ words in academic journal style and based on the 10 papers.
 
 RETURN JSON ONLY:
 {{
@@ -242,13 +246,13 @@ RETURN JSON ONLY:
         }
 
 #############################################################
-# UI – MAIN INPUTS
+# UI INPUT
 #############################################################
 st.title("📄 Research Gap Evaluation")
 
 title = st.text_input("Enter Dissertation Title")
 gap = st.text_area("Paste Research Gap", height=200)
-refs = st.text_area("Paste References (APA)", height=150)
+refs = st.text_area("Paste References (APA)", height=120)
 
 #############################################################
 # RUN EVALUATION
@@ -256,16 +260,13 @@ refs = st.text_area("Paste References (APA)", height=150)
 if st.button("Run Evaluation"):
     with st.spinner("Processing..."):
 
-        ##################################################
-        # SIMILARITY
-        ##################################################
         full_text = f"{title} {gap} {refs}"
-        q_vec = sbert.encode(full_text)
+        q_vec = embed_query(full_text)
+
         sims = vector_similarity(q_vec, embeddings)
-
         df_docs["similarity"] = sims
-        top10 = df_docs.sort_values("similarity", ascending=False).head(10)
 
+        top10 = df_docs.sort_values("similarity", ascending=False).head(10)
         top10_titles = top10["Title"].tolist()
 
         ##################################################
@@ -274,14 +275,13 @@ if st.button("Run Evaluation"):
         apa_list = []
         for t in top10_titles:
             row = df_scopus[df_scopus["Title"] == t]
-
             if len(row) > 0:
                 apa_list.append(build_apa(row.iloc[0]))
             else:
                 apa_list.append(f"{t} (metadata not found)")
 
         ##################################################
-        # GPT REVIEW
+        # GPT EVALUATION
         ##################################################
         gpt_out = gpt_review(title, gap, refs, top10_titles, style_choice)
 
@@ -303,13 +303,18 @@ if st.button("Run Evaluation"):
         <div class="metric-value">{gpt_out['clarity_score']}/10</div></div>""", unsafe_allow_html=True)
 
         col4.markdown(f"""<div class="metric-card">
-        <div class="metric-title">🔗 Citation Coverage</div>
+        <div class="metric-title">🔗 Citation Score</div>
         <div class="metric-value">{gpt_out['citation_score']}/10</div></div>""", unsafe_allow_html=True)
 
         ##################################################
         # TABS
         ##################################################
-        tab1, tab2, tab3, tab4 = st.tabs(["📚 Top 10 Literature", "🔬 GPT Comments", "📝 Rewritten Gap", "📑 APA References"])
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📚 Top 10 Literature",
+            "🔬 GPT Comments",
+            "📝 Rewritten Gap",
+            "📑 APA References"
+        ])
 
         with tab1:
             st.write(top10[["Title","Year","DOI","similarity"]])
