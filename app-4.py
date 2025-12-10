@@ -1,172 +1,131 @@
+###############################################
+# BIM Topic Research Gap Checker (Clean Build)
+# Using Parquet + NPY Embeddings Only
+###############################################
+
 import streamlit as st
 import pandas as pd
 import numpy as np
+from openai import OpenAI
+import json
 
-# ---------------------------------------------------------
-# CONFIG
-# ---------------------------------------------------------
-st.set_page_config(
-    page_title="BIM Topic Research Gap Checker",
-    layout="wide"
-)
+st.set_page_config(page_title="BIM Topic Research Gap Checker", layout="wide")
 
-st.title("BIM Topic Research Gap Checker")
-st.write("Evaluate dissertation titles and research gaps using uploaded precomputed embeddings.")
+st.markdown("""
+# BIM Topic Research Gap Checker  
+Evaluate dissertation titles and research gaps using uploaded embeddings.
+""")
 
-# ---------------------------------------------------------
-# SIDEBAR
-# ---------------------------------------------------------
+# -----------------------------------------------------
+# File Uploads
+# -----------------------------------------------------
 st.sidebar.header("Upload Required Files")
 
-parquet_file = st.sidebar.file_uploader(
-    "Upload bert_documents_enriched.parquet",
-    type=["parquet"]
-)
+parquet_file = st.sidebar.file_uploader("Upload bert_documents_enriched.parquet", type=["parquet"])
+embedding_file = st.sidebar.file_uploader("Upload bert_embeddings.npy", type=["npy"])
+api_key = st.sidebar.text_input("OpenAI API Key (Optional)", type="password")
 
-embeddings_file = st.sidebar.file_uploader(
-    "Upload bert_embeddings.npy",
-    type=["npy"]
-)
+client = OpenAI(api_key=api_key) if api_key else None
 
-query_embedding_file = st.sidebar.file_uploader(
-    "Upload query_embedding.npy",
-    type=["npy"]
-)
+if not parquet_file or not embedding_file:
+    st.warning("Please upload the parquet + npy files.")
+    st.stop()
 
-api_key = st.sidebar.text_input("OpenAI API Key (optional)", type="password")
+# -----------------------------------------------------
+# Load Data
+# -----------------------------------------------------
+df = pd.read_parquet(parquet_file)
+embeddings = np.load(embedding_file)
 
-# ---------------------------------------------------------
-# MAIN INPUTS
-# ---------------------------------------------------------
-st.header("Research Gap Evaluation")
+if len(df) != len(embeddings):
+    st.error(f"Row mismatch: parquet={len(df)} vs embeddings={len(embeddings)}")
+    st.stop()
 
-title_input = st.text_input("Enter Dissertation Title")
+# -----------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------
+def cosine_sim(a, b):
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9)
 
-gap_input = st.text_area("Paste Research Gap", height=180)
+def gpt_feedback(title, gap, refs, top_titles):
+    if not client:
+        return {"note": "No API key provided – GPT evaluation skipped."}
 
-refs_input = st.text_area("Paste APA References", height=140)
+    prompt = f"""
+You are an academic supervisor. Return JSON only.
 
-run_button = st.button("Run Evaluation")
+{{
+"title_comment": "",
+"clarity_comment": "",
+"future_comment": "",
+"originality_comment": "",
+"weaknesses": [],
+"suggestions": [],
+"rewritten_gap": ""
+}}
 
-# ---------------------------------------------------------
-# RUN EVALUATION
-# ---------------------------------------------------------
-if run_button:
+Title: {title}
+Gap: {gap}
+References: {refs}
 
-    # Validate
-    if parquet_file is None or embeddings_file is None or query_embedding_file is None:
-        st.error("Please upload all required files first.")
-        st.stop()
+Top matching titles:
+{top_titles}
+"""
 
-    # Load Data
-    with st.spinner("Loading data files..."):
-        try:
-            df = pd.read_parquet(parquet_file, engine="pyarrow")
-            df = df.fillna("")
-        except Exception as e:
-            st.error(f"Failed to load Parquet file: {e}")
-            st.stop()
-
-        try:
-            embeddings = np.load(embeddings_file, allow_pickle=False)
-            query_vec = np.load(query_embedding_file, allow_pickle=False)
-        except Exception as e:
-            st.error(f"Failed to load embeddings: {e}")
-            st.stop()
-
-        # Type safety
-        embeddings = embeddings.astype(np.float32)
-        query_vec = query_vec.astype(np.float32)
-
-        # Validate shape
-        if embeddings.shape[1] != query_vec.shape[0]:
-            st.error(f"Embedding dimension mismatch: embeddings={embeddings.shape}, query={query_vec.shape}")
-            st.stop()
-
-    st.success("Files loaded successfully.")
-
-    # ---------------------------------------------------------
-    # COMPUTE SIMILARITY (SAFE VECTORISED)
-    # ---------------------------------------------------------
-    with st.spinner("Computing similarities..."):
-
-        try:
-            norms = np.linalg.norm(embeddings, axis=1)
-            qn = np.linalg.norm(query_vec)
-
-            sims = np.dot(embeddings, query_vec) / (norms * qn + 1e-9)
-            df["similarity"] = sims
-
-        except Exception as e:
-            st.error(f"Similarity calculation failed: {e}")
-            st.stop()
-
-    st.success("Similarity computed.")
-
-    # ---------------------------------------------------------
-    # SHOW TOP PAPERS
-    # ---------------------------------------------------------
-    st.header("Top 25 Most Relevant Papers")
-
-    try:
-        top_df = df.sort_values("similarity", ascending=False).head(25)
-    except Exception as e:
-        st.error(f"Sorting failed: {e}")
-        st.stop()
-
-    # Shorten abstract for safe display
-    def short_abs(x):
-        return x[:400] + "..." if len(x) > 400 else x
-
-    top_df["short_abstract"] = top_df["Abstract"].apply(short_abs)
-
-    st.dataframe(
-        top_df[[
-            "Title",
-            "Authors",
-            "Year",
-            "Source title",
-            "DOI",
-            "short_abstract",
-            "similarity"
-        ]],
-        use_container_width=True
+    r = client.chat.completions.create(
+        model="gpt-4.1",
+        temperature=0,
+        max_tokens=1800,
+        messages=[{"role": "user", "content": prompt}]
     )
 
-    # ---------------------------------------------------------
-    # OPTIONAL GPT COMMENTARY
-    # ---------------------------------------------------------
-    if api_key:
+    try:
+        return json.loads(r.choices[0].message.content)
+    except:
+        return {"error": "GPT response not JSON."}
 
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key)
+# -----------------------------------------------------
+# Main UI
+# -----------------------------------------------------
+st.subheader("Research Gap Evaluation")
 
-            st.header("GPT Commentary (Optional)")
+title = st.text_input("Enter Dissertation Title")
+gap = st.text_area("Paste Research Gap", height=160)
+refs = st.text_area("Paste APA References", height=140)
 
-            with st.spinner("Generating expert commentary..."):
+if st.button("Run Evaluation"):
+    with st.spinner("Computing similarities..."):
+        # embed query using OpenAI if available
+        if client:
+            embed = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=[title + " " + gap + " " + refs]
+            )
+            query_vec = np.array(embed.data[0].embedding)
+        else:
+            st.error("OpenAI key required for embedding.")
+            st.stop()
 
-                prompt = f"""
-                Provide a concise academic commentary (max 2 paragraphs)
-                evaluating the following dissertation proposal:
+        sims = [cosine_sim(query_vec, e) for e in embeddings]
+        df["similarity"] = sims
 
-                Title:
-                {title_input}
+        top25 = df.sort_values("similarity", ascending=False).head(25)
 
-                Research Gap:
-                {gap_input}
+    st.success("Done!")
 
-                Student's References:
-                {refs_input}
-                """
+    # -----------------------------
+    # Display results
+    # -----------------------------
+    st.subheader("Top 25 Relevant Papers")
+    st.dataframe(top25[["Title", "Year", "Source title", "DOI", "similarity"]])
 
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=350
-                )
+    # GPT
+    st.subheader("GPT Evaluation (Optional)")
 
-                st.write(response.choices[0].message.content)
-
-        except Exception as e:
-            st.error(f"GPT commentary failed: {e}")
+    if client:
+        with st.spinner("Generating GPT evaluation..."):
+            top_titles = "\n".join(top25["Title"].tolist())
+            gpt_out = gpt_feedback(title, gap, refs, top_titles)
+        st.write(gpt_out)
+    else:
+        st.info("Add API key to enable GPT feedback.")
