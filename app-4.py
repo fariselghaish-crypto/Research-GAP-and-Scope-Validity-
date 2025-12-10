@@ -194,12 +194,13 @@ You are a senior academic reviewer for Automation in Construction, ECAM, and ITc
 TASK:
 Provide a structured, detailed, critical evaluation and rewrite of the research gap.
 
-SCORING RULES (IMPORTANT):
-- Score 8–10 when the gap demonstrates novelty, clear significance, strong structure, and relevant citations.
-- Score 5–7 only if moderate weaknesses are found.
-- Score below 5 ONLY if there are major structural, conceptual, or citation deficiencies.
-- Apply scores generously when the gap clearly contributes a new angle (e.g., multi-agent AI, ISO 19650 integration, federated learning, or cross-disciplinary innovation).
-
+SSCORING RULES (IMPORTANT – BALANCED AND REALISTIC):
+- Use scores between 6–8 for generally strong but not perfect research gaps.
+- Only score 9–10 when the gap demonstrates truly exceptional novelty, clarity, or significance that clearly moves beyond existing literature.
+- Score 5–6 when the gap is acceptable but contains notable weaknesses, vagueness, or partial misalignment.
+- Score below 5 only when the gap is fundamentally flawed or lacks essential academic quality.
+- Aim for realistic, journal-style evaluation rather than overly harsh or overly optimistic grading.
+- Each score must reflect specific evidence in the student's text (e.g., clarity of the gap, integration of literature, identification of a real unresolved issue).
 
 Journal style: {style_choice}
 
