@@ -1,5 +1,7 @@
-# FULL UPDATED & FIXED AI-BIM / Research Gap Checker App
-# (Corrected variable scope + 200-word rule + reference ranges + strict scoring)
+#############################################################
+# AI-BIM / Digital Construction Research Gap Checker
+# VERSION: FULL – STRICT SCORING – APA REFERENCES – STABLE JSON
+#############################################################
 
 import streamlit as st
 import pandas as pd
@@ -8,35 +10,45 @@ import json
 import re
 from io import BytesIO
 from openai import OpenAI
-from sentence_transformers import SentenceTransformer
-import chardet
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
 
-# ------------------------------------------------------------------
-# PAGE CONFIG
-# ------------------------------------------------------------------
+#############################################################
+# PAGE CONFIG – QUB BRANDING
+#############################################################
 st.set_page_config(page_title="AI-BIM Research Gap Checker", layout="wide")
+
 QUB_RED = "#CC0033"
 QUB_DARK = "#002147"
 QUB_LIGHT = "#F5F5F5"
 
-# ------------------------------------------------------------------
-# STYLING
-# ------------------------------------------------------------------
+#############################################################
+# CSS
+#############################################################
 st.markdown(f"""
 <style>
+body {{
+    background-color: {QUB_LIGHT};
+    font-family: Arial, sans-serif;
+}}
+.header {{
+    background-color: {QUB_DARK};
+    padding: 25px 40px;
+    border-radius: 10px;
+    color: white;
+}}
 .metric-card {{
     background-color: white;
     border-left: 6px solid {QUB_RED};
     padding: 18px;
-    border-radius: 10px;
+    border-radius: 12px;
     border: 1px solid #ddd;
     text-align: center;
 }}
 .metric-title {{
-    font-size: 17px;
-    color: {QUB_DARK};
-    margin-bottom: 8px;
+    font-size: 16px;
     font-weight: 600;
+    color: {QUB_DARK};
 }}
 .metric-value {{
     font-size: 28px;
@@ -46,80 +58,138 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# ------------------------------------------------------------------
-# SIDEBAR
-# ------------------------------------------------------------------
-st.sidebar.header("Upload Files (Two Mandatory)")
-PARQUET = st.sidebar.file_uploader("Upload Scopus CSV or PARQUET", type=["csv", "parquet"])
-EMB_PATH = st.sidebar.file_uploader("Upload Embeddings (.npy)", type=["npy"])
-api_key = st.sidebar.text_input("OpenAI API Key", type="password")
-client = OpenAI(api_key=api_key) if api_key else None
-sbert = SentenceTransformer("all-mpnet-base-v2")
+#############################################################
+# HEADER
+#############################################################
+st.markdown(f"""
+<div class="header">
+<h2>🎓 AI-BIM / Digital Construction Research Gap Checker</h2>
+<p>Evaluate research gaps using similarity, Scopus metadata, and GPT analysis.</p>
+</div>
+""", unsafe_allow_html=True)
 
-if not (PARQUET and EMB_PATH):
-    st.warning("Please upload both files to proceed.")
+#############################################################
+# SIDEBAR – Uploads
+#############################################################
+st.sidebar.header("Upload Required Files")
+
+PARQUET = st.sidebar.file_uploader("Upload bert_documents_enriched.parquet", type=["parquet"])
+EMB_PATH = st.sidebar.file_uploader("Upload bert_embeddings.npy", type=["npy"])
+SCOPUS = st.sidebar.file_uploader("Upload Scopus.csv", type=["csv"])
+api_key = st.sidebar.text_input("Enter OpenAI API Key", type="password")
+
+style_choice = st.sidebar.selectbox(
+    "Journal Style for Rewriting",
+    ["Automation in Construction", "ECAM", "ITcon"]
+)
+
+if not (PARQUET and EMB_PATH and SCOPUS and api_key):
+    st.warning("Please upload all 3 files and enter an API key.")
     st.stop()
 
-# ------------------------------------------------------------------
-# LOAD DOCUMENTS
-# ------------------------------------------------------------------
-def load_csv_with_encoding(uploaded):
-    raw = uploaded.read()
-    enc = chardet.detect(raw)["encoding"]
-    return pd.read_csv(BytesIO(raw), encoding=enc)
+client = OpenAI(api_key=api_key)
 
-if PARQUET.name.endswith('.csv'):
-    df1 = load_csv_with_encoding(PARQUET)
-else:
-    df1 = pd.read_parquet(PARQUET)
+#############################################################
+# LOADERS
+#############################################################
+@st.cache_resource
+def load_docs(parquet_file, emb_file):
+    df = pd.read_parquet(parquet_file).fillna("")
+    emb = np.load(emb_file)
+    return df, emb
 
-df1 = df1.fillna("")
-embeddings = np.load(EMB_PATH)
-vector_dim = embeddings.shape[1]
+@st.cache_resource
+def load_scopus(csv_file):
+    raw = csv_file.read()
+    for enc in ["utf-8", "iso-8859-1", "utf-16"]:
+        try:
+            df = pd.read_csv(BytesIO(raw), encoding=enc, low_memory=False)
+            df.columns = [c.strip() for c in df.columns]
+            return df
+        except:
+            pass
+    df = pd.read_csv(BytesIO(raw), low_memory=False)
+    df.columns = [c.strip() for c in df.columns]
+    return df
 
-# ------------------------------------------------------------------
-# UTILS
-# ------------------------------------------------------------------
-def compute_similarity(query_vec, emb_matrix):
+df_docs, embeddings = load_docs(PARQUET, EMB_PATH)
+df_scopus = load_scopus(SCOPUS)
+
+#############################################################
+# EMBEDDINGS
+#############################################################
+def embed_query(text):
+    resp = client.embeddings.create(
+        model="text-embedding-3-large",
+        input=text
+    )
+    return np.array(resp.data[0].embedding)
+
+#############################################################
+# APA Builder
+#############################################################
+def build_apa(row):
+    authors = row.get("Authors", "")
+    year = str(row.get("Year", "n.d."))
+    title = row.get("Title", "")
+    journal = row.get("Source title", "")
+    volume = row.get("Volume", "")
+    issue = row.get("Issue", "")
+    p1 = str(row.get("Page start", ""))
+    p2 = str(row.get("Page end", ""))
+    art = str(row.get("Art. No.", ""))
+    doi = str(row.get("DOI", ""))
+
+    pages = ""
+    if p1 and p2 and p1 != "nan" and p2 != "nan":
+        pages = f"{p1}-{p2}"
+    elif art and art != "nan":
+        pages = f"Article {art}"
+
+    apa = f"{authors} ({year}). {title}. {journal}"
+    if volume and volume != "nan":
+        apa += f", {volume}"
+    if issue and issue != "nan":
+        apa += f"({issue})"
+    if pages:
+        apa += f", {pages}"
+    if doi and doi != "nan":
+        apa += f". https://doi.org/{doi}"
+
+    return apa
+
+#############################################################
+# SIMILARITY
+#############################################################
+def vector_similarity(query_vec, emb_matrix):
     qn = np.linalg.norm(query_vec)
     dn = np.linalg.norm(emb_matrix, axis=1)
-    return (emb_matrix @ query_vec) / (dn * qn + 1e-9)
+    return emb_matrix @ query_vec / (dn * qn + 1e-9)
 
-def align_vector(vec, dim):
-    if len(vec) == dim:
-        return vec
-    if len(vec) < dim:
-        return np.concatenate([vec, np.zeros(dim - len(vec))])
-    return vec[:dim]
-
-# ------------------------------------------------------------------
-# GPT REVIEW FUNCTION
-# ------------------------------------------------------------------
-def gpt_review(title, gap, refs, top10_titles):
+#############################################################
+# GPT REVIEW – STRICT, STRUCTURED, JSON-PROOF
+#############################################################
+def gpt_review(title, gap, refs, top10_titles, style_choice):
 
     top10_text = "; ".join(top10_titles)
 
     prompt = f"""
-You are a strict reviewer for Automation in Construction, ECAM, and ITcon.
-Be critical, direct, and academically rigorous.
+You are a senior academic reviewer for journals such as Automation in Construction, ECAM, and ITcon.
 
-============================ SCORING RULES ============================
-Novelty (0–10): How new relative to top literature.
-Significance (0–10): Academic + industry impact.
-Clarity (0–10): Structure, focus, precision.
-Citation Quality (0–10): relevance + quantity (≥7 ideal).
-======================================================================
+TASK:
+Provide a structured, detailed, critical evaluation and rewrite of the research gap.
 
-OUTPUT MUST BE JSON ONLY:
+Journal style required: {style_choice}
+
+TOP 10 PAPER TITLES:
+{top10_text}
+
+RETURN JSON ONLY:
 {{
 "novelty_score": 0,
 "significance_score": 0,
 "clarity_score": 0,
 "citation_score": 0,
-"novelty_rationale": "",
-"significance_rationale": "",
-"clarity_rationale": "",
-"citation_rationale": "",
 "good_points": [],
 "improvements": [],
 "novelty_comment": "",
@@ -128,16 +198,14 @@ OUTPUT MUST BE JSON ONLY:
 "rewritten_gap": ""
 }}
 
-======================== REWRITE REQUIREMENT ========================
-YOU MUST rewrite the research gap using AT LEAST **200 words**.
-Aim for 220–260 words. If shorter than 200 words = fail.
-Write in journal style.
-====================================================================
+RULES:
+- Rewritten gap MUST be 250–300 words.
+- Use academic tone, critical, structured.
 
+TEXT:
 Title: {title}
 Gap: {gap}
 References: {refs}
-Top 10 Papers: {top10_text}
 """
 
     response = client.chat.completions.create(
@@ -149,12 +217,12 @@ Top 10 Papers: {top10_text}
 
     raw = response.choices[0].message.content
 
-    # Attempt JSON parse
+    # JSON REPAIR
     try:
         return json.loads(raw)
     except:
         try:
-            cleaned = raw[raw.find("{"):raw.rfind("}")+1]
+            cleaned = raw[raw.find("{"): raw.rfind("}")+1]
             return json.loads(cleaned)
         except:
             return {
@@ -162,10 +230,6 @@ Top 10 Papers: {top10_text}
                 "significance_score": 0,
                 "clarity_score": 0,
                 "citation_score": 0,
-                "novelty_rationale": "",
-                "significance_rationale": "",
-                "clarity_rationale": "",
-                "citation_rationale": "",
                 "good_points": [],
                 "improvements": [],
                 "novelty_comment": "",
@@ -174,46 +238,17 @@ Top 10 Papers: {top10_text}
                 "rewritten_gap": gap
             }
 
-# ------------------------------------------------------------------
-# MAIN UI
-# ------------------------------------------------------------------
-st.title("AI-BIM / Research Gap Evaluation App (Updated)")
+#############################################################
+# UI INPUT
+#############################################################
+st.title("📄 Research Gap Evaluation")
 
 title = st.text_input("Enter Dissertation Title")
-gap = st.text_area("Paste Research Gap", height=180)
-refs = st.text_area("Paste References (1 per line)", height=150)
+gap = st.text_area("Paste Research Gap", height=200)
+refs = st.text_area("Paste References (APA)", height=200)
 
-if st.button("Evaluate Research Gap"):
-    with st.spinner("Evaluating..."):
-
-        # Embed query
-        full_text = f"{title} {gap} {refs}"
-        raw_vec = sbert.encode(full_text)
-        q_vec = align_vector(raw_vec, vector_dim)
-
-        # Similarity
-        sims = compute_similarity(q_vec, embeddings)
-        df1["similarity"] = sims
-        top10 = df1.sort_values("similarity", ascending=False).head(10)
-        top10_titles = top10["Title"].tolist()
-        avg_sim = top10["similarity"].mean()
-
-        # GPT REVIEW
-        gpt = gpt_review(title, gap, refs, top10_titles)
-
-        rewritten = gpt.get("rewritten_gap", "")
-        word_count = len(rewritten.split())
-
-        # ---------------- LENGTH RULE -----------------
-        if word_count >= 200:
-            length_penalty = 0
-            length_flag = "valid"
-        elif 150 <= word_count < 200:
-            length_penalty = 5
-            length_flag = "borderline"
-        else:
-            length_penalty = 15
-            length_flag = "invalid"
-
-        # ---------------- REFERENCE RULE -----------------
-        ref_list = [r for r in refs.split("\n") if r.strip()]
+#############################################################
+# RUN EVALUATION
+#############################################################
+if st.button("Run Evaluation"):
+    with
