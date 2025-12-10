@@ -1,10 +1,6 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# FINAL FULL VERSION – QUB Branding + Similarity + APA
-# Uses:
-# 1) bert_documents_enriched.parquet
-# 2) bert_embeddings.npy
-# 3) Scopus.csv
+# FINAL VERSION – QUB BRANDING + SIMILARITY + APA + GPT
 #############################################################
 
 import streamlit as st
@@ -12,11 +8,10 @@ import pandas as pd
 import numpy as np
 import json
 import re
-import chardet
 from io import BytesIO
 from openai import OpenAI
-from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
 from sentence_transformers import SentenceTransformer
 
 #############################################################
@@ -118,8 +113,33 @@ def load_data(parquet_file, emb_file):
 @st.cache_resource
 def load_scopus(csv_file):
     raw = csv_file.read()
-    enc = chardet.detect(raw)['encoding']
-    df = pd.read_csv(BytesIO(raw), encoding=enc, low_memory=False)
+
+    # Try UTF-8
+    try:
+        df = pd.read_csv(BytesIO(raw), encoding="utf-8", low_memory=False)
+        df.columns = [c.strip() for c in df.columns]
+        return df
+    except:
+        pass
+
+    # Try Latin-1
+    try:
+        df = pd.read_csv(BytesIO(raw), encoding="iso-8859-1", low_memory=False)
+        df.columns = [c.strip() for c in df.columns]
+        return df
+    except:
+        pass
+
+    # Try UTF-16
+    try:
+        df = pd.read_csv(BytesIO(raw), encoding="utf-16", low_memory=False)
+        df.columns = [c.strip() for c in df.columns]
+        return df
+    except:
+        pass
+
+    # Fallback
+    df = pd.read_csv(BytesIO(raw), low_memory=False)
     df.columns = [c.strip() for c in df.columns]
     return df
 
@@ -143,19 +163,19 @@ def build_apa(row):
     doi = str(row.get("DOI", ""))
 
     pages = ""
-    if p1 != "" and p2 != "" and p1 != "nan" and p2 != "nan":
+    if p1 and p1 != "nan" and p2 and p2 != "nan":
         pages = f"{p1}-{p2}"
     elif art not in ["", "nan"]:
         pages = f"Article {art}"
 
     apa = f"{authors} ({year}). {title}. {journal}"
-    if volume not in ["", "nan"]:
+    if volume and volume != "nan":
         apa += f", {volume}"
-    if issue not in ["", "nan"]:
+    if issue and issue != "nan":
         apa += f"({issue})"
-    if pages != "":
+    if pages:
         apa += f", {pages}"
-    if doi not in ["", "nan"]:
+    if doi and doi != "nan":
         apa += f". https://doi.org/{doi}"
 
     return apa
@@ -183,13 +203,13 @@ TOP 10 MOST RELEVANT PAPERS:
 
 TASKS:
 1. Evaluate novelty, significance, clarity, citation strength, missing theory.
-2. Produce scores (0-10) for:
+2. Provide scores (0-10) for:
    - Novelty
    - Significance
    - Clarity
    - Citation coverage
-3. Provide critical comments.
-4. Rewrite the gap in 300+ words in academic journal style, grounded in the top 10 papers.
+3. Give critical comments.
+4. Rewrite the research gap in 300+ words using academic journal style and grounded in the top 10 papers.
 
 RETURN JSON ONLY:
 {{
@@ -203,9 +223,9 @@ RETURN JSON ONLY:
 """
 
     response = client.chat.completions.create(
-        model="gpt-4.1-preview",
+        model="gpt-4.1-premium",
         temperature=0.0,
-        max_tokens=1800,
+        max_tokens=2000,
         messages=[{"role":"user","content":prompt}]
     )
 
@@ -230,6 +250,9 @@ title = st.text_input("Enter Dissertation Title")
 gap = st.text_area("Paste Research Gap", height=200)
 refs = st.text_area("Paste References (APA)", height=150)
 
+#############################################################
+# RUN EVALUATION
+#############################################################
 if st.button("Run Evaluation"):
     with st.spinner("Processing..."):
 
@@ -246,11 +269,12 @@ if st.button("Run Evaluation"):
         top10_titles = top10["Title"].tolist()
 
         ##################################################
-        # BUILD APA REFERENCES FOR TOP 10
+        # APA REFERENCES
         ##################################################
         apa_list = []
         for t in top10_titles:
             row = df_scopus[df_scopus["Title"] == t]
+
             if len(row) > 0:
                 apa_list.append(build_apa(row.iloc[0]))
             else:
@@ -262,7 +286,7 @@ if st.button("Run Evaluation"):
         gpt_out = gpt_review(title, gap, refs, top10_titles, style_choice)
 
         ##################################################
-        # METRICS DISPLAY
+        # METRICS
         ##################################################
         col1, col2, col3, col4 = st.columns(4)
 
@@ -285,7 +309,7 @@ if st.button("Run Evaluation"):
         ##################################################
         # TABS
         ##################################################
-        tab1, tab2, tab3, tab4 = st.tabs(["Top 10 Literature", "GPT Comments", "Rewritten Gap", "APA References"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📚 Top 10 Literature", "🔬 GPT Comments", "📝 Rewritten Gap", "📑 APA References"])
 
         with tab1:
             st.write(top10[["Title","Year","DOI","similarity"]])
