@@ -181,20 +181,29 @@ def vector_similarity(query_vec, emb_matrix):
 #############################################################
 def gpt_review(title, gap, refs, top10_titles, style_choice):
 
+    top10_text = "; ".join(top10_titles)
+
     prompt = f"""
-You are a senior academic reviewer. Analyse and rewrite the student's research gap.
+You are an academic reviewer.
 
-Journal style required: {style_choice}.
+Rewrite and evaluate the following research gap.
 
-TOP 10 MOST RELEVANT PAPERS:
-{json.dumps(top10_titles, indent=2)}
+Journal style: {style_choice}
+
+TOP RELEVANT PAPERS (titles only):
+{top10_text}
 
 TASKS:
-1. Evaluate novelty, significance, clarity, citation strength.
-2. Provide 4–6 critical comments.
-3. Rewrite the research gap in 300+ words in academic journal style.
+1. Score 0–10:
+   - Novelty
+   - Significance
+   - Clarity
+   - Citation quality
+2. Provide 4 concise reviewer comments.
+3. Rewrite the research gap in 250–300 words in journal style.
+4. Return JSON only.
 
-RETURN JSON ONLY:
+FORMAT:
 {{
 "novelty_score": 0,
 "significance_score": 0,
@@ -203,18 +212,23 @@ RETURN JSON ONLY:
 "comments": [],
 "rewritten_gap": ""
 }}
+
+TEXT TO REVIEW:
+Title: {title}
+Gap: {gap}
+References: {refs}
 """
 
     response = client.chat.completions.create(
         model="gpt-4.1",
         temperature=0.0,
-        max_tokens=2500,
-        messages=[{"role": "user", "content": prompt}]
+        max_tokens=1800,
+        messages=[{"role":"user","content":prompt}]
     )
 
     raw = response.choices[0].message.content
 
-    # ---- JSON REPAIR ----
+    # JSON REPAIR
     try:
         return json.loads(raw)
     except:
@@ -227,9 +241,10 @@ RETURN JSON ONLY:
                 "significance_score": 0,
                 "clarity_score": 0,
                 "citation_score": 0,
-                "comments": ["GPT returned invalid JSON"],
+                "comments": ["GPT could not produce structured JSON"],
                 "rewritten_gap": gap
             }
+
 
 #############################################################
 # UI
