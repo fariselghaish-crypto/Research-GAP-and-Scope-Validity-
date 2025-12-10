@@ -1,5 +1,6 @@
-streamlit
-openai
 pandas
 numpy
+openai
 reportlab
+sentence-transformers
+torch
