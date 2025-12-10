@@ -1,6 +1,6 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# UPDATED VERSION WITH RUBRIC, CITATION LOGIC, AND 300-WORD GAP RULE
+# UPDATED VERSION – 25 PAPERS, CRITICAL RUBRIC, JOURNAL-STYLE GAP
 #############################################################
 
 import streamlit as st
@@ -141,50 +141,76 @@ def generate_pdf(title, avg_sim, citation_cov, keyword_score, verdict, gpt_eval)
     write(f"• Verdict: {verdict}", "Helvetica-Bold", 12, 20)
 
     write("\nGPT Evaluation Rubric:", "Helvetica-Bold", 13, 25)
-    for key, val in gpt_eval.items():
-        write(f"{key}:", "Helvetica-Bold", 12)
-        if isinstance(val, list):
-            write("\n".join(val))
-        else:
-            write(str(val))
+    write("Novelty:", "Helvetica-Bold", 12)
+    write(str(gpt_eval.get("novelty_comment", "")))
+    write("Significance:", "Helvetica-Bold", 12)
+    write(str(gpt_eval.get("significance_comment", "")))
+    write("Clarity & Citation Coverage:", "Helvetica-Bold", 12)
+    write(str(gpt_eval.get("clarity_citation_comment", "")))
+
+    write("\nWeaknesses:", "Helvetica-Bold", 12)
+    for w in gpt_eval.get("weaknesses", []):
+        write(f"- {w}")
+
+    write("\nSuggestions:", "Helvetica-Bold", 12)
+    for s in gpt_eval.get("suggestions", []):
+        write(f"- {s}")
+
+    write("\nRewritten Research Gap:", "Helvetica-Bold", 12)
+    write(gpt_eval.get("rewritten_gap", ""))
+
+    write("\nReferences:", "Helvetica-Bold", 12)
+    for r in gpt_eval.get("references_list", []):
+        write(f"- {r}")
 
     c.save()
     buffer.seek(0)
     return buffer
 
 # ==========================================================
-# GPT JSON EVALUATOR
+# GPT JSON EVALUATOR (MORE CRITICAL, JOURNAL STYLE)
 # ==========================================================
-def gpt_evaluate_json(title, gap, refs, top10_text):
+def gpt_evaluate_json(title, gap, refs, top_lit_text):
     prompt = f"""
-You are an academic supervisor evaluating a dissertation research gap.
+You are an experienced academic supervisor and journal reviewer in construction informatics, BIM and AI.
 
-Your task:
-1. Provide rubric-based comments.
-2. Rewrite the research gap into AT LEAST 300 WORDS.
-3. Include AT LEAST 10 APA citations.
-4. Add a section titled "References" with all citations used.
+Be CRITICAL and STRICT in your evaluation.
+
+Your tasks:
+
+1. Evaluate the student's research gap under THREE headings:
+   - Novelty (originality of the gap compared to the literature)
+   - Significance (importance for theory, practice and the BIM/AI community)
+   - Clarity & Citation Coverage (clarity of problem framing, logical flow, and how well the gap is grounded in citations)
+
+2. Rewrite the research gap:
+   - At least 300 WORDS.
+   - Written in the style of a JOURNAL PAPER introduction/gap section (formal, structured, analytical, academic tone).
+   - Use at least 10 APA-style in-text citations (author, year).
+   - The citations should be plausible and aligned with BIM / AI / digital construction topics.
+
+3. Add a list of references:
+   - Provide a list of all references used in the rewritten gap as APA-style reference strings.
 
 Return ONLY valid JSON in this exact format:
 
 {{
-"title_comment": "",
-"clarity_comment": "",
-"future_comment": "",
-"originality_comment": "",
-"weaknesses": [],
-"suggestions": [],
-"rewritten_gap": "",
-"references_list": []
+  "novelty_comment": "",
+  "significance_comment": "",
+  "clarity_citation_comment": "",
+  "weaknesses": [],
+  "suggestions": [],
+  "rewritten_gap": "",
+  "references_list": []
 }}
 
 Student Input:
 Title: {title}
 Research Gap: {gap}
-References: {refs}
+References Provided by Student: {refs}
 
-Top-Matched Literature:
-{top10_text}
+Top-Matched Literature (most relevant 25 papers):
+{top_lit_text}
 """
     resp = client.chat.completions.create(
         model="gpt-4.1",
@@ -195,9 +221,20 @@ Top-Matched Literature:
     content = resp.choices[0].message.content
 
     try:
-        return json.loads(content)
+        parsed = json.loads(content)
     except:
-        return {"error": "GPT returned invalid JSON.", "rewritten_gap": gap, "references_list": []}
+        # Fallback in case of invalid JSON
+        parsed = {
+            "novelty_comment": "",
+            "significance_comment": "",
+            "clarity_citation_comment": "",
+            "weaknesses": ["GPT returned invalid JSON."],
+            "suggestions": [],
+            "rewritten_gap": gap,
+            "references_list": []
+        }
+
+    return parsed
 
 # ==========================================================
 # MAIN UI
@@ -215,19 +252,21 @@ if st.button("Evaluate Research Gap"):
         q_raw = sbert.encode(full_text)
         query_vec = align(q_raw, doc_dim)
 
+        # Use TOP 25 papers instead of 10
         df1["similarity"] = [compute_similarity(query_vec, v) for v in embeddings]
-        top10 = df1.sort_values("similarity", ascending=False).head(10)
-        avg_sim = top10["similarity"].mean()
+        top_n = 25
+        top_lit = df1.sort_values("similarity", ascending=False).head(top_n)
+        avg_sim = top_lit["similarity"].mean()
 
         # ==========================================================
-        # Citation Coverage UPDATED (minimum expected = 10)
+        # Citation Coverage (minimum expected = 10 references)
         # ==========================================================
         ref_lines = [r.lower() for r in refs.split("\n") if r.strip()]
         expected_refs = max(len(ref_lines), 10)
 
         match_count = 0
         for r in ref_lines:
-            for t in top10["Title"]:
+            for t in top_lit["Title"]:
                 if t.lower()[:25] in r:
                     match_count += 1
                     break
@@ -244,9 +283,14 @@ if st.button("Evaluate Research Gap"):
         keyword_score = int(len(overlap) / max(len(gap_kw.index), 1) * 20)
 
         # ==========================================================
-        # GPT Evaluation (ENHANCED)
+        # GPT Evaluation (CRITICAL RUBRIC + JOURNAL STYLE)
         # ==========================================================
-        gpt_eval = gpt_evaluate_json(title, gap, refs, "\n".join(top10["Title"]))
+        gpt_eval = gpt_evaluate_json(
+            title,
+            gap,
+            refs,
+            "\n".join(top_lit["Title"])
+        )
 
         clarity_score = 15
         future_score = 15
@@ -277,18 +321,25 @@ if st.button("Evaluate Research Gap"):
         # ==================================================
         # TABS
         # ==================================================
-        tab1, tab2, tab3, tab4 = st.tabs(["Top Literature", "GPT Evaluation (Rubric)", "Weaknesses", "Rewritten Gap"])
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "Top Literature (Top 25)",
+            "GPT Evaluation (Rubric)",
+            "Weaknesses",
+            "Rewritten Gap"
+        ])
 
         with tab1:
-            st.subheader("Top 10 Most Relevant Papers")
-            st.dataframe(top10[["Title", "Year", "DOI", "similarity"]])
+            st.subheader("Top 25 Most Relevant Papers")
+            st.dataframe(top_lit[["Title", "Year", "DOI", "similarity"]])
 
         with tab2:
             st.subheader("Rubric Evaluation")
-            st.write(gpt_eval.get("title_comment", ""))
-            st.write(gpt_eval.get("clarity_comment", ""))
-            st.write(gpt_eval.get("future_comment", ""))
-            st.write(gpt_eval.get("originality_comment", ""))
+            st.markdown("### Novelty")
+            st.write(gpt_eval.get("novelty_comment", ""))
+            st.markdown("### Significance")
+            st.write(gpt_eval.get("significance_comment", ""))
+            st.markdown("### Clarity & Citation Coverage")
+            st.write(gpt_eval.get("clarity_citation_comment", ""))
 
         with tab3:
             st.subheader("Critical Weaknesses")
@@ -299,7 +350,7 @@ if st.button("Evaluate Research Gap"):
                 st.write(f"- {s}")
 
         with tab4:
-            st.subheader("Rewritten Research Gap (≥300 words, ≥10 citations)")
+            st.subheader("Rewritten Research Gap (Journal-Style, ≥300 words, ≥10 citations)")
             st.write(gpt_eval.get("rewritten_gap", ""))
             st.subheader("References Used")
             for r in gpt_eval.get("references_list", []):
@@ -309,8 +360,12 @@ if st.button("Evaluate Research Gap"):
         # PDF EXPORT
         # ==================================================
         pdf_buffer = generate_pdf(
-            title, avg_sim, f"{match_count}/{expected_refs}",
-            keyword_score, verdict, gpt_eval
+            title,
+            avg_sim,
+            f"{match_count}/{expected_refs}",
+            keyword_score,
+            verdict,
+            gpt_eval
         )
 
         st.download_button(
