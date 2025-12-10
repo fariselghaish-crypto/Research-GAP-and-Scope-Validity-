@@ -216,43 +216,5 @@ if st.button("Evaluate Research Gap"):
             length_flag = "invalid"
 
         # ---------------- REFERENCE RULE -----------------
-        ref_list = [r for r in refs.split("\n")) if r.strip()]) if r.strip()]
-        ref_count = len(ref_list)
-
-        if ref_count >= 7:
-            ref_penalty = 0
-            ref_flag = "valid"
-        elif 5 <= ref_count <= 6:
-            ref_penalty = 5
-            ref_flag = "borderline"
-        else:
-            ref_penalty = 15
-            ref_flag = "invalid"
-
-        # ---------------- TOTAL SCORE -----------------
-        total_raw = (
-            gpt["novelty_score"] +
-            gpt["significance_score"] +
-            gpt["clarity_score"] +
-            gpt["citation_score"] -
-            length_penalty -
-            ref_penalty
-        )
-
-        total_score = max(0, min(40, total_raw))
-
-        # ---------------- VERDICT -----------------
-        if length_flag == "invalid" or ref_flag == "invalid":
-            verdict = "❌ NOT VALID"
-        elif total_score >= 30:
-            verdict = "🟢 VALID"
-        elif total_score >= 20:
-            verdict = "🟡 BORDERLINE"
-        else:
-            verdict = "❌ NOT VALID"
-
-        # ---------------- DISPLAY -----------------
-        col1, col2, col3, col4 = st.columns(4)
-        col1.markdown(f"<div class='metric-card'><div class='metric-title'>Avg Similarity</div><div class='metric-value'>{avg_sim:.3f}</div></div>", unsafe_allow_html=True)
-        col2.markdown(f"<div class='metric-card'><div class='metric-title'>Novelty</div><div class='metric-value'>{gpt['novelty_score']}/10</div></div>", unsafe_allow_html=True)
-        col3.markdown(f"<div class='metric-card'><div class='metric-title'>Significance</
+        ref_list = [r for r in refs.split("
+") if r.strip()]
