@@ -1,6 +1,6 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# FINAL VERSION – Stable, JSON-safe, Structured Comments
+# VERSION: FULL – STRICT SCORING – APA REFERENCES – STABLE JSON
 #############################################################
 
 import streamlit as st
@@ -116,7 +116,7 @@ df_docs, embeddings = load_docs(PARQUET, EMB_PATH)
 df_scopus = load_scopus(SCOPUS)
 
 #############################################################
-# OpenAI Embedding (3072 dimensions)
+# EMBEDDINGS
 #############################################################
 def embed_query(text):
     resp = client.embeddings.create(
@@ -159,7 +159,7 @@ def build_apa(row):
     return apa
 
 #############################################################
-# Similarity
+# SIMILARITY
 #############################################################
 def vector_similarity(query_vec, emb_matrix):
     qn = np.linalg.norm(query_vec)
@@ -167,7 +167,7 @@ def vector_similarity(query_vec, emb_matrix):
     return emb_matrix @ query_vec / (dn * qn + 1e-9)
 
 #############################################################
-# GPT REVIEW — STRUCTURED COMMENTS VERSION
+# GPT REVIEW – STRICT, STRUCTURED, JSON-PROOF
 #############################################################
 def gpt_review(title, gap, refs, top10_titles, style_choice):
 
@@ -176,31 +176,15 @@ def gpt_review(title, gap, refs, top10_titles, style_choice):
     prompt = f"""
 You are a senior academic reviewer for journals such as Automation in Construction, ECAM, and ITcon.
 
-Provide a detailed, structured review.
+TASK:
+Provide a structured, detailed, critical evaluation and rewrite of the research gap.
 
-Journal style: {style_choice}
+Journal style required: {style_choice}
 
-TOP 10 RELEVANT PAPER TITLES:
+TOP 10 PAPER TITLES:
 {top10_text}
 
-TASKS (RETURN JSON ONLY):
-
-1. Provide scores (0–10):
-   - Novelty
-   - Significance
-   - Clarity
-   - Citation quality
-
-2. Provide structured reviewer comments:
-   - "good_points": 3–5 strengths
-   - "improvements": 3–5 issues or missing elements
-   - "novelty_comment": detailed critique of novelty
-   - "significance_comment": detailed critique of contribution
-   - "citation_comment": evaluation of citation sufficiency and relevance
-
-3. Rewrite the research gap in 250–300 words in journal style.
-
-USE THIS EXACT JSON FORMAT:
+RETURN JSON ONLY:
 {{
 "novelty_score": 0,
 "significance_score": 0,
@@ -214,7 +198,11 @@ USE THIS EXACT JSON FORMAT:
 "rewritten_gap": ""
 }}
 
-TEXT TO REVIEW:
+RULES:
+- Rewritten gap MUST be 250–300 words.
+- Use academic tone, critical, structured.
+
+TEXT:
 Title: {title}
 Gap: {gap}
 References: {refs}
@@ -257,7 +245,7 @@ st.title("📄 Research Gap Evaluation")
 
 title = st.text_input("Enter Dissertation Title")
 gap = st.text_area("Paste Research Gap", height=200)
-refs = st.text_area("Paste References (APA)", height=120)
+refs = st.text_area("Paste References (APA)", height=200)
 
 #############################################################
 # RUN EVALUATION
@@ -274,7 +262,7 @@ if st.button("Run Evaluation"):
         top10 = df_docs.sort_values("similarity", ascending=False).head(10)
         top10_titles = top10["Title"].tolist()
 
-        # Build APA references
+        # Build APA references for top 10
         apa_list = []
         for t in top10_titles:
             row = df_scopus[df_scopus["Title"] == t]
@@ -283,35 +271,86 @@ if st.button("Run Evaluation"):
             else:
                 apa_list.append(f"{t} (metadata not found)")
 
-        # GPT Review
+        # GPT REVIEW
         gpt_out = gpt_review(title, gap, refs, top10_titles, style_choice)
 
-        # METRICS
+        #############################################################
+        # HARD VALIDITY RULES
+        #############################################################
+
+        # Rule 1: Rewritten Gap Length (min 300 words)
+        gap_word_count = len(gpt_out["rewritten_gap"].split())
+        gap_length_flag = gap_word_count < 300
+        length_penalty = 15 if gap_length_flag else 0
+
+        # Rule 2: Minimum References (min 7)
+        num_refs = len([r for r in refs.split("\n") if r.strip()])
+        ref_flag = num_refs < 7
+        ref_penalty = 15 if ref_flag else 0
+
+        # Total scoring
+        total_raw = (
+            gpt_out["novelty_score"]
+            + gpt_out["significance_score"]
+            + gpt_out["clarity_score"]
+            + gpt_out["citation_score"]
+            - length_penalty
+            - ref_penalty
+        )
+
+        total_score = max(0, min(40, total_raw))
+
+        # Verdict
+        if gap_length_flag or ref_flag:
+            verdict = "❌ NOT VALID"
+        elif total_score >= 30:
+            verdict = "🟢 VALID"
+        elif total_score >= 20:
+            verdict = "🟡 BORDERLINE"
+        else:
+            verdict = "❌ NOT VALID"
+
+        #############################################################
+        # METRICS UI
+        #############################################################
         col1, col2, col3, col4 = st.columns(4)
 
-        col1.markdown(f"""<div class='metric-card'>
-        <div class='metric-title'>🧠 Novelty</div>
-        <div class='metric-value'>{gpt_out['novelty_score']}/10</div></div>""", unsafe_allow_html=True)
+        col1.markdown(
+            f"<div class='metric-card'><div class='metric-title'>Novelty</div>"
+            f"<div class='metric-value'>{gpt_out['novelty_score']}/10</div></div>",
+            unsafe_allow_html=True
+        )
 
-        col2.markdown(f"""<div class='metric-card'>
-        <div class='metric-title'>🔬 Significance</div>
-        <div class='metric-value'>{gpt_out['significance_score']}/10</div></div>""", unsafe_allow_html=True)
+        col2.markdown(
+            f"<div class='metric-card'><div class='metric-title'>Significance</div>"
+            f"<div class='metric-value'>{gpt_out['significance_score']}/10</div></div>",
+            unsafe_allow_html=True
+        )
 
-        col3.markdown(f"""<div class='metric-card'>
-        <div class='metric-title'>📝 Clarity</div>
-        <div class='metric-value'>{gpt_out['clarity_score']}/10</div></div>""", unsafe_allow_html=True)
+        col3.markdown(
+            f"<div class='metric-card'><div class='metric-title'>Clarity</div>"
+            f"<div class='metric-value'>{gpt_out['clarity_score']}/10</div></div>",
+            unsafe_allow_html=True
+        )
 
-        col4.markdown(f"""<div class='metric-card'>
-        <div class='metric-title'>📚 Citation</div>
-        <div class='metric-value'>{gpt_out['citation_score']}/10</div></div>""", unsafe_allow_html=True)
+        col4.markdown(
+            f"<div class='metric-card'><div class='metric-title'>Citation Quality</div>"
+            f"<div class='metric-value'>{gpt_out['citation_score']}/10</div></div>",
+            unsafe_allow_html=True
+        )
 
+        st.subheader(f"Overall Verdict: {verdict}")
+
+        #############################################################
         # TABS
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        #############################################################
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📚 Top 10 Literature",
             "⭐ Good Points",
             "🚧 Improvements",
             "🔎 Novelty & Significance",
-            "📝 Rewritten Gap"
+            "📝 Rewritten Gap",
+            "📑 APA References"
         ])
 
         with tab1:
@@ -336,3 +375,6 @@ if st.button("Run Evaluation"):
         with tab5:
             st.write(gpt_out["rewritten_gap"])
 
+        with tab6:
+            for ref in apa_list:
+                st.write("•", ref)
