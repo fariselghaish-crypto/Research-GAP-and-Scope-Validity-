@@ -183,17 +183,17 @@ def gpt_review(title, gap, refs, top10_titles, style_choice):
 
     top10_text = "; ".join(top10_titles)
 
-prompt = f"""
+    prompt = f"""
 You are an academic reviewer for journals such as Automation in Construction, ECAM, and ITcon.
 
-Evaluate the research gap with *structured reviewer comments*.
+Your role is to provide a structured, detailed assessment of the research gap.
 
 Journal style required: {style_choice}
 
-TOP 10 PAPER TITLES:
+TOP 10 RELEVANT PAPER TITLES:
 {top10_text}
 
-TASKS (RETURN IN JSON):
+TASKS (RETURN JSON ONLY):
 
 1. Provide a score (0–10) for:
    - Novelty
@@ -201,16 +201,17 @@ TASKS (RETURN IN JSON):
    - Clarity
    - Citation quality
 
-2. Provide reviewer comments divided into the following categories:
-   - "good_points": 3–5 strengths of the research gap
-   - "improvements": 3–5 things that need improvement
-   - "novelty_comment": a detailed critique of novelty
-   - "significance_comment": a detailed critique of the relevance and contribution
-   - "citation_comment": evaluation of citation adequacy and relevance
+2. Provide structured reviewer comments:
+   - "good_points": List 3–5 strengths of the research gap.
+   - "improvements": List 3–5 areas that need improvement.
+   - "novelty_comment": A detailed explanation of the novelty.
+   - "significance_comment": A detailed explanation of the importance and contribution.
+   - "citation_comment": A detailed evaluation of citation relevance, quality, and sufficiency.
 
-3. Rewrite the research gap (250–300 words) in formal journal style.
+3. Rewrite the research gap in **250–300 words**, academic journal style, with strong structure and critical tone.
 
-FORMAT:
+RETURN JSON ONLY IN THIS EXACT FORMAT:
+
 {{
 "novelty_score": 0,
 "significance_score": 0,
@@ -229,6 +230,38 @@ Title: {title}
 Gap: {gap}
 References: {refs}
 """
+
+    # GPT CALL
+    response = client.chat.completions.create(
+        model="gpt-4.1",
+        temperature=0.0,
+        max_tokens=2400,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    raw = response.choices[0].message.content
+
+    # ---- JSON REPAIR ----
+    try:
+        return json.loads(raw)
+    except:
+        try:
+            cleaned = raw[raw.find("{"): raw.rfind("}")+1]
+            return json.loads(cleaned)
+        except:
+            return {
+                "novelty_score": 0,
+                "significance_score": 0,
+                "clarity_score": 0,
+                "citation_score": 0,
+                "good_points": [],
+                "improvements": [],
+                "novelty_comment": "",
+                "significance_comment": "",
+                "citation_comment": "",
+                "rewritten_gap": gap
+            }
+
 
 
 
