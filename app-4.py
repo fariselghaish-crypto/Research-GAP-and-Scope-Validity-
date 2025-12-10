@@ -183,25 +183,32 @@ def gpt_review(title, gap, refs, top10_titles, style_choice):
 
     top10_text = "; ".join(top10_titles)
 
-    prompt = f"""
-You are an academic reviewer.
+prompt = f"""
+You are an academic reviewer for journals such as Automation in Construction, ECAM, and ITcon.
 
-Rewrite and evaluate the following research gap.
+Evaluate the research gap with *structured reviewer comments*.
 
-Journal style: {style_choice}
+Journal style required: {style_choice}
 
-TOP RELEVANT PAPERS (titles only):
+TOP 10 PAPER TITLES:
 {top10_text}
 
-TASKS:
-1. Score 0–10:
+TASKS (RETURN IN JSON):
+
+1. Provide a score (0–10) for:
    - Novelty
    - Significance
    - Clarity
    - Citation quality
-2. Provide 4 concise reviewer comments.
-3. Rewrite the research gap in 250–300 words in journal style.
-4. Return JSON only.
+
+2. Provide reviewer comments divided into the following categories:
+   - "good_points": 3–5 strengths of the research gap
+   - "improvements": 3–5 things that need improvement
+   - "novelty_comment": a detailed critique of novelty
+   - "significance_comment": a detailed critique of the relevance and contribution
+   - "citation_comment": evaluation of citation adequacy and relevance
+
+3. Rewrite the research gap (250–300 words) in formal journal style.
 
 FORMAT:
 {{
@@ -209,7 +216,11 @@ FORMAT:
 "significance_score": 0,
 "clarity_score": 0,
 "citation_score": 0,
-"comments": [],
+"good_points": [],
+"improvements": [],
+"novelty_comment": "",
+"significance_comment": "",
+"citation_comment": "",
 "rewritten_gap": ""
 }}
 
@@ -219,31 +230,6 @@ Gap: {gap}
 References: {refs}
 """
 
-    response = client.chat.completions.create(
-        model="gpt-4.1",
-        temperature=0.0,
-        max_tokens=1800,
-        messages=[{"role":"user","content":prompt}]
-    )
-
-    raw = response.choices[0].message.content
-
-    # JSON REPAIR
-    try:
-        return json.loads(raw)
-    except:
-        try:
-            cleaned = raw[raw.find("{"): raw.rfind("}")+1]
-            return json.loads(cleaned)
-        except:
-            return {
-                "novelty_score": 0,
-                "significance_score": 0,
-                "clarity_score": 0,
-                "citation_score": 0,
-                "comments": ["GPT could not produce structured JSON"],
-                "rewritten_gap": gap
-            }
 
 
 #############################################################
