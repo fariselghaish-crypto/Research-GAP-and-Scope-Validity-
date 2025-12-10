@@ -1,7 +1,7 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# FINAL FIXED VERSION – using OpenAI embeddings (3072 dims)
-# FULL WORKING APP
+# FINAL VERSION – Fully stable, JSON-safe, working with 
+# OpenAI embeddings (3072 dimensions)
 #############################################################
 
 import streamlit as st
@@ -15,7 +15,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 
 #############################################################
-# PAGE CONFIG – QUB BRANDING
+# PAGE CONFIG – QUB Branding
 #############################################################
 st.set_page_config(page_title="AI-BIM Research Gap Checker", layout="wide")
 
@@ -72,12 +72,12 @@ body {{
 st.markdown(f"""
 <div class="header">
 <h2>🎓 AI-BIM / Digital Construction Research Gap Checker</h2>
-<p>Evaluate dissertation research gaps using similarity, Scopus metadata, and GPT-4.1-Premium rewriting.</p>
+<p>Evaluate dissertation research gaps using similarity, Scopus metadata, and GPT-4.1 rewriting.</p>
 </div>
 """, unsafe_allow_html=True)
 
 #############################################################
-# SIDEBAR
+# SIDEBAR – Uploads
 #############################################################
 st.sidebar.header("Upload Required Files")
 
@@ -92,7 +92,7 @@ style_choice = st.sidebar.selectbox(
 )
 
 if not (PARQUET and EMB_PATH and SCOPUS and api_key):
-    st.warning("Please upload all 3 files and enter API key.")
+    st.warning("Please upload all 3 files and enter an API key.")
     st.stop()
 
 client = OpenAI(api_key=api_key)
@@ -110,31 +110,14 @@ def load_docs(parquet_file, emb_file):
 def load_scopus(csv_file):
     raw = csv_file.read()
 
-    # Try UTF-8
-    try:
-        df = pd.read_csv(BytesIO(raw), encoding="utf-8", low_memory=False)
-        df.columns = [c.strip() for c in df.columns]
-        return df
-    except:
-        pass
+    for enc in ["utf-8", "iso-8859-1", "utf-16"]:
+        try:
+            df = pd.read_csv(BytesIO(raw), encoding=enc, low_memory=False)
+            df.columns = [c.strip() for c in df.columns]
+            return df
+        except:
+            pass
 
-    # Try ISO-8859-1
-    try:
-        df = pd.read_csv(BytesIO(raw), encoding="iso-8859-1", low_memory=False)
-        df.columns = [c.strip() for c in df.columns]
-        return df
-    except:
-        pass
-
-    # Try UTF-16
-    try:
-        df = pd.read_csv(BytesIO(raw), encoding="utf-16", low_memory=False)
-        df.columns = [c.strip() for c in df.columns]
-        return df
-    except:
-        pass
-
-    # Fallback
     df = pd.read_csv(BytesIO(raw), low_memory=False)
     df.columns = [c.strip() for c in df.columns]
     return df
@@ -143,7 +126,7 @@ df_docs, embeddings = load_docs(PARQUET, EMB_PATH)
 df_scopus = load_scopus(SCOPUS)
 
 #############################################################
-# OPENAI EMBEDDING (3072 dims)
+# OpenAI Embedding (3072-dim)
 #############################################################
 def embed_query(text):
     resp = client.embeddings.create(
@@ -168,9 +151,9 @@ def build_apa(row):
     doi = str(row.get("DOI", ""))
 
     pages = ""
-    if p1 and p1 != "nan" and p2 and p2 != "nan":
+    if p1 != "nan" and p2 != "nan" and p1 and p2:
         pages = f"{p1}-{p2}"
-    elif art not in ["", "nan"]:
+    elif art and art != "nan":
         pages = f"Article {art}"
 
     apa = f"{authors} ({year}). {title}. {journal}"
@@ -186,7 +169,7 @@ def build_apa(row):
     return apa
 
 #############################################################
-# VECTORISED SIMILARITY
+# Vectorised Similarity
 #############################################################
 def vector_similarity(query_vec, emb_matrix):
     qn = np.linalg.norm(query_vec)
@@ -194,9 +177,10 @@ def vector_similarity(query_vec, emb_matrix):
     return emb_matrix @ query_vec / (dn * qn + 1e-9)
 
 #############################################################
-# GPT REVIEW ENGINE
+# GPT REVIEW (with JSON repair)
 #############################################################
-ddef gpt_review(title, gap, refs, top10_titles, style_choice):
+def gpt_review(title, gap, refs, top10_titles, style_choice):
+
     prompt = f"""
 You are a senior academic reviewer. Analyse and rewrite the student's research gap.
 
@@ -208,7 +192,7 @@ TOP 10 MOST RELEVANT PAPERS:
 TASKS:
 1. Evaluate novelty, significance, clarity, citation strength.
 2. Provide 4–6 critical comments.
-3. Rewrite the research gap in 300+ words in academic journal style and grounded in the 10 papers.
+3. Rewrite the research gap in 300+ words in academic journal style.
 
 RETURN JSON ONLY:
 {{
@@ -225,16 +209,15 @@ RETURN JSON ONLY:
         model="gpt-4.1",
         temperature=0.0,
         max_tokens=2500,
-        messages=[{"role":"user","content":prompt}]
+        messages=[{"role": "user", "content": prompt}]
     )
 
     raw = response.choices[0].message.content
 
-    # ---------- JSON REPAIR ----------
+    # ---- JSON REPAIR ----
     try:
         return json.loads(raw)
     except:
-        # try to extract JSON inside text
         try:
             cleaned = raw[raw.find("{"): raw.rfind("}")+1]
             return json.loads(cleaned)
@@ -249,7 +232,7 @@ RETURN JSON ONLY:
             }
 
 #############################################################
-# UI INPUT
+# UI
 #############################################################
 st.title("📄 Research Gap Evaluation")
 
@@ -272,9 +255,7 @@ if st.button("Run Evaluation"):
         top10 = df_docs.sort_values("similarity", ascending=False).head(10)
         top10_titles = top10["Title"].tolist()
 
-        ##################################################
-        # APA REFERENCES
-        ##################################################
+        # APA extraction
         apa_list = []
         for t in top10_titles:
             row = df_scopus[df_scopus["Title"] == t]
@@ -283,14 +264,10 @@ if st.button("Run Evaluation"):
             else:
                 apa_list.append(f"{t} (metadata not found)")
 
-        ##################################################
-        # GPT EVALUATION
-        ##################################################
+        # GPT Evaluation
         gpt_out = gpt_review(title, gap, refs, top10_titles, style_choice)
 
-        ##################################################
         # METRICS
-        ##################################################
         col1, col2, col3, col4 = st.columns(4)
 
         col1.markdown(f"""<div class="metric-card">
@@ -309,9 +286,7 @@ if st.button("Run Evaluation"):
         <div class="metric-title">🔗 Citation Score</div>
         <div class="metric-value">{gpt_out['citation_score']}/10</div></div>""", unsafe_allow_html=True)
 
-        ##################################################
         # TABS
-        ##################################################
         tab1, tab2, tab3, tab4 = st.tabs([
             "📚 Top 10 Literature",
             "🔬 GPT Comments",
@@ -320,7 +295,7 @@ if st.button("Run Evaluation"):
         ])
 
         with tab1:
-            st.write(top10[["Title","Year","DOI","similarity"]])
+            st.write(top10[["Title", "Year", "DOI", "similarity"]])
 
         with tab2:
             for c in gpt_out["comments"]:
