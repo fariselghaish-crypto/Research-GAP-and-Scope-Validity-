@@ -217,7 +217,7 @@ if st.button("Evaluate Research Gap"):
 
         # ---------------- REFERENCE RULE -----------------
         ref_list = [r for r in refs.split("
-") if r.strip()]
+") if r.strip()]) if r.strip()]
         ref_count = len(ref_list)
 
         if ref_count >= 7:
