@@ -192,7 +192,14 @@ def gpt_review(title, gap, refs, top10_titles, style_choice):
 You are a senior academic reviewer for Automation in Construction, ECAM, and ITcon.
 
 TASK:
-Provide a structured, critical evaluation and rewrite of the research gap.
+Provide a structured, detailed, critical evaluation and rewrite of the research gap.
+
+SCORING RULES (IMPORTANT):
+- Score 8–10 when the gap demonstrates novelty, clear significance, strong structure, and relevant citations.
+- Score 5–7 only if moderate weaknesses are found.
+- Score below 5 ONLY if there are major structural, conceptual, or citation deficiencies.
+- Apply scores generously when the gap clearly contributes a new angle (e.g., multi-agent AI, ISO 19650 integration, federated learning, or cross-disciplinary innovation).
+
 
 Journal style: {style_choice}
 
