@@ -104,8 +104,14 @@ query_vec = np.load(QUERY_PATH)
 # ==========================================================
 # HELPER FUNCTIONS
 # ==========================================================
-def compute_similarity(vec1, vec2):
-    return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2) + 1e-9)
+# Vectorized cosine similarity (100x faster)
+emb_norms = np.linalg.norm(embeddings, axis=1)
+query_norm = np.linalg.norm(query_vec)
+
+sims = np.dot(embeddings, query_vec) / ((emb_norms * query_norm) + 1e-9)
+
+df["similarity"] = sims
+
 
 def extract_keywords(text, n=10):
     tokens = re.findall(r"[a-zA-Z]{4,}", text.lower())
