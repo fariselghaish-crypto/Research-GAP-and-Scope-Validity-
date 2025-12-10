@@ -1,7 +1,6 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# FINAL WORKING VERSION – USING YOUR TWO NEW FILES ONLY
-# No logic changed. No scoring changed. No PDFs removed.
+# UPDATED VERSION WITH RUBRIC, CITATION LOGIC, AND 300-WORD GAP RULE
 #############################################################
 
 import streamlit as st
@@ -91,7 +90,6 @@ if not (PARQUET and EMB_PATH):
 # ==========================================================
 df1 = pd.read_parquet(PARQUET).fillna("")
 embeddings = np.load(EMB_PATH)
-
 doc_dim = embeddings.shape[1]
 
 # ==========================================================
@@ -114,11 +112,15 @@ def extract_keywords(text, n=10):
     freq = pd.Series(tokens).value_counts()
     return freq.head(n)
 
+# ==========================================================
+# PDF GENERATOR
+# ==========================================================
 def generate_pdf(title, avg_sim, citation_cov, keyword_score, verdict, gpt_eval):
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     y = height - 50
+
     def write(text, font="Helvetica", size=11, step=15):
         nonlocal y
         c.setFont(font, size)
@@ -129,6 +131,7 @@ def generate_pdf(title, avg_sim, citation_cov, keyword_score, verdict, gpt_eval)
                 c.setFont(font, size)
             c.drawString(40, y, line[:100])
             y -= step
+
     write("AI-BIM Research Gap Evaluation Report", "Helvetica-Bold", 16, 25)
     write(f"Title: {title}", "Helvetica-Bold", 12, 20)
     write("Summary Metrics:", "Helvetica-Bold", 12, 20)
@@ -136,20 +139,31 @@ def generate_pdf(title, avg_sim, citation_cov, keyword_score, verdict, gpt_eval)
     write(f"• Citation Coverage: {citation_cov}")
     write(f"• Keyword Score: {keyword_score}/20")
     write(f"• Verdict: {verdict}", "Helvetica-Bold", 12, 20)
-    write("\nGPT Evaluation:", "Helvetica-Bold", 13, 25)
+
+    write("\nGPT Evaluation Rubric:", "Helvetica-Bold", 13, 25)
     for key, val in gpt_eval.items():
         write(f"{key}:", "Helvetica-Bold", 12)
         if isinstance(val, list):
             write("\n".join(val))
         else:
             write(str(val))
+
     c.save()
     buffer.seek(0)
     return buffer
 
+# ==========================================================
+# GPT JSON EVALUATOR
+# ==========================================================
 def gpt_evaluate_json(title, gap, refs, top10_text):
     prompt = f"""
 You are an academic supervisor evaluating a dissertation research gap.
+
+Your task:
+1. Provide rubric-based comments.
+2. Rewrite the research gap into AT LEAST 300 WORDS.
+3. Include AT LEAST 10 APA citations.
+4. Add a section titled "References" with all citations used.
 
 Return ONLY valid JSON in this exact format:
 
@@ -160,7 +174,8 @@ Return ONLY valid JSON in this exact format:
 "originality_comment": "",
 "weaknesses": [],
 "suggestions": [],
-"rewritten_gap": ""
+"rewritten_gap": "",
+"references_list": []
 }}
 
 Student Input:
@@ -173,15 +188,16 @@ Top-Matched Literature:
 """
     resp = client.chat.completions.create(
         model="gpt-4.1",
-        temperature=0.0,
+        temperature=0,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=2000
+        max_tokens=4000
     )
     content = resp.choices[0].message.content
+
     try:
         return json.loads(content)
     except:
-        return {"error": "GPT returned invalid JSON.", "rewritten_gap": gap}
+        return {"error": "GPT returned invalid JSON.", "rewritten_gap": gap, "references_list": []}
 
 # ==========================================================
 # MAIN UI
@@ -195,7 +211,6 @@ refs = st.text_area("Paste APA References", height=150)
 if st.button("Evaluate Research Gap"):
     with st.spinner("Processing evaluation..."):
 
-        # USE SBERT — SAME MODEL FAMILY AS YOUR DOCUMENT EMBEDDINGS
         full_text = f"{title} {gap} {refs}"
         q_raw = sbert.encode(full_text)
         query_vec = align(q_raw, doc_dim)
@@ -205,16 +220,19 @@ if st.button("Evaluate Research Gap"):
         avg_sim = top10["similarity"].mean()
 
         # ==========================================================
-        # Citation Coverage (unchanged)
+        # Citation Coverage UPDATED (minimum expected = 10)
         # ==========================================================
         ref_lines = [r.lower() for r in refs.split("\n") if r.strip()]
+        expected_refs = max(len(ref_lines), 10)
+
         match_count = 0
         for r in ref_lines:
             for t in top10["Title"]:
                 if t.lower()[:25] in r:
                     match_count += 1
                     break
-        cov_ratio = match_count / max(len(ref_lines), 1)
+
+        cov_ratio = match_count / expected_refs
         citation_score = int(cov_ratio * 40)
 
         # ==========================================================
@@ -226,13 +244,10 @@ if st.button("Evaluate Research Gap"):
         keyword_score = int(len(overlap) / max(len(gap_kw.index), 1) * 20)
 
         # ==========================================================
-        # GPT Evaluation
+        # GPT Evaluation (ENHANCED)
         # ==========================================================
         gpt_eval = gpt_evaluate_json(title, gap, refs, "\n".join(top10["Title"]))
 
-        # ==========================================================
-        # Final Verdict (unchanged)
-        # ==========================================================
         clarity_score = 15
         future_score = 15
         originality_score = 15
@@ -247,28 +262,29 @@ if st.button("Evaluate Research Gap"):
             verdict = "NOT VALID"; badge = "🔴 NOT VALID"
 
         # ==================================================
-        # DASHBOARD (unchanged)
+        # DASHBOARD
         # ==================================================
         col1, col2, col3, col4 = st.columns(4)
         col1.markdown(f"""<div class="metric-card"><div class="metric-title">Avg Similarity</div>
         <div class="metric-value">{avg_sim:.3f}</div></div>""", unsafe_allow_html=True)
         col2.markdown(f"""<div class="metric-card"><div class="metric-title">Citation Coverage</div>
-        <div class="metric-value">{match_count}/{len(ref_lines)}</div></div>""", unsafe_allow_html=True)
+        <div class="metric-value">{match_count}/{expected_refs}</div></div>""", unsafe_allow_html=True)
         col3.markdown(f"""<div class="metric-card"><div class="metric-title">Keyword Score</div>
         <div class="metric-value">{keyword_score}/20</div></div>""", unsafe_allow_html=True)
         col4.markdown(f"""<div class="metric-card"><div class="metric-title">Verdict</div>
         <div class="metric-value">{badge}</div></div>""", unsafe_allow_html=True)
 
         # ==================================================
-        # TABS (unchanged)
+        # TABS
         # ==================================================
-        tab1, tab2, tab3, tab4 = st.tabs(["Top Literature", "GPT Evaluation", "Weaknesses", "Rewritten Gap"])
+        tab1, tab2, tab3, tab4 = st.tabs(["Top Literature", "GPT Evaluation (Rubric)", "Weaknesses", "Rewritten Gap"])
 
         with tab1:
+            st.subheader("Top 10 Most Relevant Papers")
             st.dataframe(top10[["Title", "Year", "DOI", "similarity"]])
 
         with tab2:
-            st.subheader("GPT Evaluation")
+            st.subheader("Rubric Evaluation")
             st.write(gpt_eval.get("title_comment", ""))
             st.write(gpt_eval.get("clarity_comment", ""))
             st.write(gpt_eval.get("future_comment", ""))
@@ -283,14 +299,17 @@ if st.button("Evaluate Research Gap"):
                 st.write(f"- {s}")
 
         with tab4:
-            st.subheader("Rewritten Research Gap")
+            st.subheader("Rewritten Research Gap (≥300 words, ≥10 citations)")
             st.write(gpt_eval.get("rewritten_gap", ""))
+            st.subheader("References Used")
+            for r in gpt_eval.get("references_list", []):
+                st.write(f"- {r}")
 
         # ==================================================
-        # PDF (unchanged)
+        # PDF EXPORT
         # ==================================================
         pdf_buffer = generate_pdf(
-            title, avg_sim, f"{match_count}/{len(ref_lines)}",
+            title, avg_sim, f"{match_count}/{expected_refs}",
             keyword_score, verdict, gpt_eval
         )
 
