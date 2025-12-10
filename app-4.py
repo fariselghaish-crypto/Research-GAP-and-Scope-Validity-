@@ -174,22 +174,68 @@ def gpt_review(title, gap, refs, top10_titles, style_choice):
     top10_text = "; ".join(top10_titles)
 
     prompt = f"""
-You are a senior academic reviewer for journals such as Automation in Construction, ECAM, and ITcon.
+You are a **strict peer reviewer** for *Automation in Construction*, *ECAM*, and *ITcon*.
 
-TASK:
-Provide a structured, detailed, critical evaluation and rewrite of the research gap.
+Your tone must be:
+- Critical but constructive
+- Evidence-based
+- Expert-level
+- Not optimistic
+- Direct and specific
+- Consistent and logically reasoned
 
-Journal style required: {style_choice}
+Your evaluation MUST be logically tied to the content of the student's gap AND the top 10 papers.
 
-TOP 10 PAPER TITLES:
-{top10_text}
+You should penalise:
+- Broad scope
+- Vague statements
+- Unsupported claims
+- Missing conceptual framing
+- Insufficient citations
+- Weak methodological articulation
+- Weak justification of novelty
 
-RETURN JSON ONLY:
+You should reward:
+- Clear articulation of limitations in prior work
+- Specific connections to top relevant literature
+- Explicit methodological direction
+- Strong alignment with active research gaps
+
+===============================
+SCORING RULES (0–10 each):
+===============================
+
+**Novelty Score**  
+Give a lower score (3–6) if the topic is studied before (e.g., AI + BIM + safety).  
+Give a higher score (7–10) only if the gap clearly identifies a niche not addressed in top papers.
+
+**Significance Score**  
+Assess practical value and academic contribution.  
+High score requires clear demonstration of impact, not just assumptions.
+
+**Clarity Score**  
+Evaluate structure, precision, and focus. Penalise rambling or broad gaps.
+
+**Citation Score**  
+Must evaluate:
+- Relevance of citations
+- Quantity (≥7 expected)
+- Alignment with top-10 papers
+- Whether limitations are linked to the cited works
+
+===============================
+YOUR OUTPUT MUST BE JSON ONLY:
+===============================
+
 {{
 "novelty_score": 0,
 "significance_score": 0,
 "clarity_score": 0,
 "citation_score": 0,
+"novelty_rationale": "",
+"significance_rationale": "",
+"clarity_rationale": "",
+"citation_rationale": "",
 "good_points": [],
 "improvements": [],
 "novelty_comment": "",
@@ -198,14 +244,20 @@ RETURN JSON ONLY:
 "rewritten_gap": ""
 }}
 
-RULES:
-- Rewritten gap MUST be 250–300 words.
-- Use academic tone, critical, structured.
+===============================
+REWRITE INSTRUCTIONS
+===============================
+Rewrite the gap in **300 words**, journal style, structured, critical, and aligned with AIC/ECAM conventions.
 
-TEXT:
+===============================
+TEXT TO REVIEW
+===============================
 Title: {title}
 Gap: {gap}
 References: {refs}
+
+Top 10 Most Relevant Papers:
+{top10_text}
 """
 
     response = client.chat.completions.create(
@@ -217,7 +269,7 @@ References: {refs}
 
     raw = response.choices[0].message.content
 
-    # JSON REPAIR
+    # JSON repair
     try:
         return json.loads(raw)
     except:
@@ -230,6 +282,10 @@ References: {refs}
                 "significance_score": 0,
                 "clarity_score": 0,
                 "citation_score": 0,
+                "novelty_rationale": "",
+                "significance_rationale": "",
+                "clarity_rationale": "",
+                "citation_rationale": "",
                 "good_points": [],
                 "improvements": [],
                 "novelty_comment": "",
