@@ -1,6 +1,6 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# VERSION: FULL – STRICT SCORING – APA REFERENCES – STABLE JSON
+# VERSION: FULL – STRICT SCORING – APA REFERENCES – UPDATED RULES
 #############################################################
 
 import streamlit as st
@@ -251,4 +251,150 @@ refs = st.text_area("Paste References (APA)", height=200)
 # RUN EVALUATION
 #############################################################
 if st.button("Run Evaluation"):
-    with
+    with st.spinner("Processing..."):
+
+        full_text = f"{title} {gap} {refs}"
+        q_vec = embed_query(full_text)
+
+        sims = vector_similarity(q_vec, embeddings)
+        df_docs["similarity"] = sims
+
+        top10 = df_docs.sort_values("similarity", ascending=False).head(10)
+        top10_titles = top10["Title"].tolist()
+
+        # Build APA references for top 10
+        apa_list = []
+        for t in top10_titles:
+            row = df_scopus[df_scopus["Title"] == t]
+            if len(row) > 0:
+                apa_list.append(build_apa(row.iloc[0]))
+            else:
+                apa_list.append(f"{t} (metadata not found)")
+
+        # GPT REVIEW
+        gpt_out = gpt_review(title, gap, refs, top10_titles, style_choice)
+
+        #############################################################
+        # HARD VALIDITY RULES (UPDATED)
+        #############################################################
+
+        # Extract rewritten gap
+        rewritten_gap = gpt_out["rewritten_gap"]
+        gap_word_count = len(rewritten_gap.split())
+
+        # --- Word count rule ---
+        if gap_word_count >= 200:
+            length_flag = "valid"
+            length_penalty = 0
+        elif 150 <= gap_word_count < 200:
+            length_flag = "borderline"
+            length_penalty = 5
+        else:
+            length_flag = "invalid"
+            length_penalty = 15
+
+        # --- Reference count rule ---
+        ref_list = [r for r in refs.split("\n") if r.strip()]
+        ref_count = len(ref_list)
+
+        if ref_count >= 7:
+            ref_flag = "valid"
+            ref_penalty = 0
+        elif 5 <= ref_count <= 6:
+            ref_flag = "borderline"
+            ref_penalty = 5
+        else:
+            ref_flag = "invalid"
+            ref_penalty = 15
+
+        # --- FINAL SCORE CALCULATION ---
+        total_raw = (
+            gpt_out["novelty_score"]
+            + gpt_out["significance_score"]
+            + gpt_out["clarity_score"]
+            + gpt_out["citation_score"]
+            - length_penalty
+            - ref_penalty
+        )
+
+        # Ensure score stays between 0 and 40
+        total_score = max(0, min(40, total_raw))
+
+        # --- FINAL VERDICT ---
+        if length_flag == "invalid" or ref_flag == "invalid":
+            verdict = "❌ NOT VALID"
+        elif total_score >= 30:
+            verdict = "🟢 VALID"
+        elif total_score >= 20:
+            verdict = "🟡 BORDERLINE"
+        else:
+            verdict = "❌ NOT VALID"
+
+        #############################################################
+        # METRICS UI
+        #############################################################
+        col1, col2, col3, col4 = st.columns(4)
+
+        col1.markdown(
+            f"<div class='metric-card'><div class='metric-title'>Novelty</div>"
+            f"<div class='metric-value'>{gpt_out['novelty_score']}/10</div></div>",
+            unsafe_allow_html=True
+        )
+
+        col2.markdown(
+            f"<div class='metric-card'><div class='metric-title'>Significance</div>"
+            f"<div class='metric-value'>{gpt_out['significance_score']}/10</div></div>",
+            unsafe_allow_html=True
+        )
+
+        col3.markdown(
+            f"<div class='metric-card'><div class='metric-title'>Clarity</div>"
+            f"<div class='metric-value'>{gpt_out['clarity_score']}/10</div></div>",
+            unsafe_allow_html=True
+        )
+
+        col4.markdown(
+            f"<div class='metric-card'><div class='metric-title'>Citation Quality</div>"
+            f"<div class='metric-value'>{gpt_out['citation_score']}/10</div></div>",
+            unsafe_allow_html=True
+        )
+
+        st.subheader(f"Overall Verdict: {verdict}")
+
+        #############################################################
+        # TABS
+        #############################################################
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "📚 Top 10 Literature",
+            "⭐ Good Points",
+            "🚧 Improvements",
+            "🔎 Novelty & Significance",
+            "📝 Rewritten Gap",
+            "📑 APA References"
+        ])
+
+        with tab1:
+            st.write(top10[["Title","Year","DOI","similarity"]])
+
+        with tab2:
+            for p in gpt_out["good_points"]:
+                st.write("•", p)
+
+        with tab3:
+            for p in gpt_out["improvements"]:
+                st.write("•", p)
+
+        with tab4:
+            st.write("### Novelty Comment")
+            st.write(gpt_out["novelty_comment"])
+            st.write("### Significance Comment")
+            st.write(gpt_out["significance_comment"])
+            st.write("### Citation Comment")
+            st.write(gpt_out["citation_comment"])
+
+        with tab5:
+            st.write(gpt_out["rewritten_gap"])
+
+        with tab6:
+            for ref in apa_list:
+                st.write("•", ref)
