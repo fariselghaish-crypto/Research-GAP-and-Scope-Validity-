@@ -1,7 +1,6 @@
 #############################################################
-# BIM Topic Research Gap Checker
-# One-file Edition (Parquet + Embeddings)
-# QUB Edition – DEC 2025
+# BIM / Digital Construction Research Gap Checker (BERT Version)
+# FINAL STREAMLIT APP – DEC 2025
 #############################################################
 
 import streamlit as st
@@ -13,6 +12,7 @@ from io import BytesIO
 from openai import OpenAI
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+from sentence_transformers import SentenceTransformer
 
 # ==========================================================
 # PAGE CONFIG + BRANDING
@@ -69,39 +69,40 @@ body {{
 st.markdown(f"""
 <div class="header">
 <h2>BIM Topic Research Gap Checker</h2>
-<p>Evaluate dissertation titles and research gaps using embeddings, similarity analysis, and GPT evaluation.</p>
+<p>Evaluate dissertation titles and research gaps using BERT similarity and academic analysis.</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ==========================================================
 # SIDEBAR
 # ==========================================================
-st.sidebar.header("Upload Dataset (ONE FILE ONLY)")
+st.sidebar.header("Upload Dataset")
 
-PARQUET_PATH = st.sidebar.file_uploader(
+CSV_PATH = st.sidebar.file_uploader(
     "Upload bert_documents_enriched.parquet",
     type=["parquet"]
 )
 
-api_key = st.sidebar.text_input("OpenAI API Key", type="password")
+api_key = st.sidebar.text_input("OpenAI API Key (optional for GPT comments)", type="password")
 client = OpenAI(api_key=api_key) if api_key else None
 
-if not PARQUET_PATH:
-    st.warning("Please upload bert_documents_enriched.parquet")
+if CSV_PATH is None:
+    st.warning("Please upload the Parquet dataset.")
     st.stop()
 
-# ==========================================================
-# LOAD DATA
-# ==========================================================
-df = pd.read_parquet(PARQUET_PATH).fillna("")
+df = pd.read_parquet(CSV_PATH).fillna("")
 
-# Embeddings already stored as list of floats → convert
+# Extract embeddings (already stored as arrays)
 embeddings = np.vstack(df["embedding"].values)
+
+# Load SAME BERT model used to create these embeddings
+bert = SentenceTransformer("all-mpnet-base-v2")
 
 # ==========================================================
 # HELPER FUNCTIONS
 # ==========================================================
 def compute_similarity(vec1, vec2):
+    """Cosine similarity"""
     return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2) + 1e-9)
 
 def extract_keywords(text, n=10):
@@ -128,7 +129,7 @@ def generate_pdf(title, avg_sim, citation_cov, keyword_score, verdict, gpt_eval)
             c.drawString(40, y, line[:100])
             y -= step
 
-    write_line("BIM Topic Research Gap Evaluation Report", "Helvetica-Bold", 16, 25)
+    write_line("BIM Topic Gap Evaluation Report", "Helvetica-Bold", 16, 25)
     write_line(f"Title: {title}", "Helvetica-Bold", 12, 20)
     write_line("Summary Metrics:", "Helvetica-Bold", 12, 20)
     write_line(f"• Avg Similarity: {avg_sim:.3f}")
@@ -136,37 +137,35 @@ def generate_pdf(title, avg_sim, citation_cov, keyword_score, verdict, gpt_eval)
     write_line(f"• Keyword Score: {keyword_score}/20")
     write_line(f"• Verdict: {verdict}", "Helvetica-Bold", 12, 20)
 
-    write_line("\nGPT Evaluation:", "Helvetica-Bold", 13, 25)
-    write_line("Title Evaluation:", "Helvetica-Bold", 12)
-    write_line(gpt_eval["title_comment"])
-
-    write_line("\nClarity:", "Helvetica-Bold", 12)
-    write_line(gpt_eval["clarity_comment"])
-
-    write_line("\nFuture Contribution:", "Helvetica-Bold", 12)
-    write_line(gpt_eval["future_comment"])
-
-    write_line("\nOriginality:", "Helvetica-Bold", 12)
-    write_line(gpt_eval["originality_comment"])
-
-    write_line("\nWeaknesses:", "Helvetica-Bold", 12)
-    write_line("\n".join(gpt_eval["weaknesses"]))
-
-    write_line("\nSuggestions:", "Helvetica-Bold", 12)
-    write_line("\n".join(gpt_eval["suggestions"]))
-
-    write_line("\nRewritten Gap:", "Helvetica-Bold", 12)
-    write_line(gpt_eval["rewritten_gap"])
+    if gpt_eval:
+        write_line("\nGPT Evaluation:", "Helvetica-Bold", 13, 25)
+        write_line("Title Evaluation:", "Helvetica-Bold", 12)
+        write_line(gpt_eval.get("title_comment", ""))
+        write_line("\nClarity:", "Helvetica-Bold", 12)
+        write_line(gpt_eval.get("clarity_comment", ""))
+        write_line("\nFuture Contribution:", "Helvetica-Bold", 12)
+        write_line(gpt_eval.get("future_comment", ""))
+        write_line("\nOriginality:", "Helvetica-Bold", 12)
+        write_line(gpt_eval.get("originality_comment", ""))
+        write_line("\nWeaknesses:", "Helvetica-Bold", 12)
+        write_line("\n".join(gpt_eval.get("weaknesses", [])))
+        write_line("\nSuggestions:", "Helvetica-Bold", 12)
+        write_line("\n".join(gpt_eval.get("suggestions", [])))
+        write_line("\nRewritten Gap:", "Helvetica-Bold", 12)
+        write_line(gpt_eval.get("rewritten_gap", ""))
 
     c.save()
     buffer.seek(0)
     return buffer
 
 def gpt_evaluate_json(title, gap, refs, top10_text):
+    if not client:
+        return None
+
     prompt = f"""
 You are an academic supervisor evaluating a dissertation research gap.
 
-Return ONLY valid JSON in this exact format:
+Return ONLY valid JSON:
 
 {{
 "title_comment": "",
@@ -185,8 +184,6 @@ References: {refs}
 
 Top-Matched Literature:
 {top10_text}
-
-Provide precise, academic, evidence-based feedback.
 """
 
     resp = client.chat.completions.create(
@@ -199,10 +196,10 @@ Provide precise, academic, evidence-based feedback.
     content = resp.choices[0].message.content
 
     try:
-        parsed = json.loads(content)
+        return json.loads(content)
     except:
-        parsed = {
-            "title_comment": "JSON formatting error.",
+        return {
+            "title_comment": "Error parsing GPT response.",
             "clarity_comment": "Error.",
             "future_comment": "Error.",
             "originality_comment": "Error.",
@@ -210,7 +207,6 @@ Provide precise, academic, evidence-based feedback.
             "suggestions": [],
             "rewritten_gap": gap
         }
-    return parsed
 
 # ==========================================================
 # MAIN UI
@@ -222,17 +218,17 @@ gap_input = st.text_area("Paste Research Gap", height=180)
 refs_input = st.text_area("Paste APA References", height=150)
 
 if st.button("Evaluate Research Gap"):
-    with st.spinner("Processing evaluation..."):
+
+    with st.spinner("Embedding and evaluating..."):
 
         full_text = title_input + " " + gap_input + " " + refs_input
 
-        embed = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=[full_text]
-        )
-        query_vec = np.array(embed.data[0].embedding)
+        # Embed query using SAME BERT model
+        query_vec = bert.encode(full_text, convert_to_numpy=True)
 
+        # Compute similarities
         df["similarity"] = [compute_similarity(query_vec, v) for v in embeddings]
+
         top10 = df.sort_values("similarity", ascending=False).head(10)
         avg_sim = top10["similarity"].mean()
 
@@ -244,17 +240,19 @@ if st.button("Evaluate Research Gap"):
                 if t.lower()[:25] in r:
                     match_count += 1
                     break
-        cov_ratio = match_count / max(len(ref_lines), 1)
-        citation_score = int(cov_ratio * 40)
+        citation_score = int((match_count / max(1, len(ref_lines))) * 40)
 
         # ===== Keyword Score =====
         gap_kw = extract_keywords(gap_input)
         lit_kw = extract_keywords(" ".join(df["Abstract"].tolist()))
         overlap = set(gap_kw.index).intersection(lit_kw.index)
-        keyword_score = int(len(overlap) / max(len(gap_kw.index), 1) * 20)
+        keyword_score = int(len(overlap) / max(1, len(gap_kw.index)) * 20)
 
         # ===== GPT Evaluation =====
-        gpt_eval = gpt_evaluate_json(title_input, gap_input, refs_input, "\n".join(top10["Title"]))
+        gpt_eval = gpt_evaluate_json(
+            title_input, gap_input, refs_input,
+            "\n".join(top10["Title"])
+        )
 
         # ===== Final Score =====
         clarity_score = 15
@@ -282,53 +280,61 @@ if st.button("Evaluate Research Gap"):
             <div class="metric-value">{avg_sim:.3f}</div></div>""", unsafe_allow_html=True)
         col2.markdown(f"""<div class="metric-card">
             <div class="metric-title">Citation Coverage</div>
-            <div class="metric-value">{match_count}/{len(ref_lines)}</div></div>""",
-                      unsafe_allow_html=True)
+            <div class="metric-value">{match_count}/{len(ref_lines)}</div></div>""", unsafe_allow_html=True)
         col3.markdown(f"""<div class="metric-card">
             <div class="metric-title">Keyword Score</div>
-            <div class="metric-value">{keyword_score}/20</div></div>""",
-                      unsafe_allow_html=True)
+            <div class="metric-value">{keyword_score}/20</div></div>""", unsafe_allow_html=True)
         col4.markdown(f"""<div class="metric-card">
             <div class="metric-title">Verdict</div>
-            <div class="metric-value">{badge}</div></div>""",
-                      unsafe_allow_html=True)
+            <div class="metric-value">{badge}</div></div>""", unsafe_allow_html=True)
 
         # ==================================================
         # TABS
         # ==================================================
-        tab1, tab2, tab3, tab4 = st.tabs(["Top Literature", "GPT Evaluation", "Weaknesses", "Rewritten Gap"])
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "Top Literature",
+            "GPT Evaluation",
+            "Weaknesses",
+            "Rewritten Gap"
+        ])
 
         with tab1:
             st.dataframe(top10[["Title", "Year", "DOI", "similarity"]])
 
         with tab2:
-            st.subheader("GPT Evaluation")
-            st.write("### Title")
-            st.write(gpt_eval["title_comment"])
-            st.write("### Clarity")
-            st.write(gpt_eval["clarity_comment"])
-            st.write("### Future Contribution")
-            st.write(gpt_eval["future_comment"])
-            st.write("### Originality")
-            st.write(gpt_eval["originality_comment"])
+            if gpt_eval:
+                st.write("### Title")
+                st.write(gpt_eval["title_comment"])
+                st.write("### Clarity")
+                st.write(gpt_eval["clarity_comment"])
+                st.write("### Future Contribution")
+                st.write(gpt_eval["future_comment"])
+                st.write("### Originality")
+                st.write(gpt_eval["originality_comment"])
+            else:
+                st.info("Add OpenAI key to enable GPT evaluation.")
 
         with tab3:
-            st.subheader("Critical Weaknesses")
-            for w in gpt_eval["weaknesses"]:
-                st.write(f"- {w}")
-            st.subheader("Suggestions")
-            for s in gpt_eval["suggestions"]:
-                st.write(f"- {s}")
+            if gpt_eval:
+                st.subheader("Critical Weaknesses")
+                for w in gpt_eval["weaknesses"]:
+                    st.write(f"- {w}")
+                st.subheader("Suggestions")
+                for s in gpt_eval["suggestions"]:
+                    st.write(f"- {s}")
+            else:
+                st.info("GPT evaluation disabled.")
 
         with tab4:
             st.subheader("Rewritten Research Gap")
-            st.write(gpt_eval["rewritten_gap"])
+            st.write(gpt_eval["rewritten_gap"] if gpt_eval else "GPT disabled.")
 
         # ==================================================
         # PDF DOWNLOAD
         # ==================================================
         pdf_buffer = generate_pdf(
-            title_input, avg_sim, f"{match_count}/{len(ref_lines)}",
+            title_input, avg_sim,
+            f"{match_count}/{len(ref_lines)}",
             keyword_score, verdict, gpt_eval
         )
 
