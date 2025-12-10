@@ -227,11 +227,11 @@ RETURN JSON ONLY:
 """
 
     response = client.chat.completions.create(
-        model="gpt-4.1-premium",
+        model="gpt-4.1",
         temperature=0.0,
         max_tokens=2000,
         messages=[{"role":"user","content":prompt}]
-    )
+)
 
     try:
         return json.loads(response.choices[0].message.content)
