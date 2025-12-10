@@ -120,10 +120,11 @@ df_scopus = load_scopus(SCOPUS)
 #############################################################
 def embed_query(text):
     resp = client.embeddings.create(
-        model="text-embedding-3-large",
+        model="text-embedding-3-small",   # 384-dim model, matches your .npy embeddings
         input=text
     )
     return np.array(resp.data[0].embedding)
+
 
 #############################################################
 # APA Builder
