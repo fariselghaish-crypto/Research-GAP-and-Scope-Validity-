@@ -1,7 +1,6 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# FINAL VERSION – Fully stable, JSON-safe, working with 
-# OpenAI embeddings (3072 dimensions)
+# FINAL VERSION – Stable, JSON-safe, Structured Comments
 #############################################################
 
 import streamlit as st
@@ -15,7 +14,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 
 #############################################################
-# PAGE CONFIG – QUB Branding
+# PAGE CONFIG – QUB BRANDING
 #############################################################
 st.set_page_config(page_title="AI-BIM Research Gap Checker", layout="wide")
 
@@ -56,13 +55,6 @@ body {{
     font-weight: 700;
     color: {QUB_RED};
 }}
-.section-title {{
-    font-size: 20px;
-    font-weight: bold;
-    color: {QUB_DARK};
-    margin-top: 25px;
-    margin-bottom: 10px;
-}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -72,7 +64,7 @@ body {{
 st.markdown(f"""
 <div class="header">
 <h2>🎓 AI-BIM / Digital Construction Research Gap Checker</h2>
-<p>Evaluate dissertation research gaps using similarity, Scopus metadata, and GPT-4.1 rewriting.</p>
+<p>Evaluate research gaps using similarity, Scopus metadata, and GPT analysis.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -109,7 +101,6 @@ def load_docs(parquet_file, emb_file):
 @st.cache_resource
 def load_scopus(csv_file):
     raw = csv_file.read()
-
     for enc in ["utf-8", "iso-8859-1", "utf-16"]:
         try:
             df = pd.read_csv(BytesIO(raw), encoding=enc, low_memory=False)
@@ -117,7 +108,6 @@ def load_scopus(csv_file):
             return df
         except:
             pass
-
     df = pd.read_csv(BytesIO(raw), low_memory=False)
     df.columns = [c.strip() for c in df.columns]
     return df
@@ -126,7 +116,7 @@ df_docs, embeddings = load_docs(PARQUET, EMB_PATH)
 df_scopus = load_scopus(SCOPUS)
 
 #############################################################
-# OpenAI Embedding (3072-dim)
+# OpenAI Embedding (3072 dimensions)
 #############################################################
 def embed_query(text):
     resp = client.embeddings.create(
@@ -136,13 +126,13 @@ def embed_query(text):
     return np.array(resp.data[0].embedding)
 
 #############################################################
-# APA REFERENCE BUILDER
+# APA Builder
 #############################################################
 def build_apa(row):
     authors = row.get("Authors", "")
     year = str(row.get("Year", "n.d."))
     title = row.get("Title", "")
-    journal = row.get("Source title", row.get("Source titl", ""))
+    journal = row.get("Source title", "")
     volume = row.get("Volume", "")
     issue = row.get("Issue", "")
     p1 = str(row.get("Page start", ""))
@@ -151,7 +141,7 @@ def build_apa(row):
     doi = str(row.get("DOI", ""))
 
     pages = ""
-    if p1 != "nan" and p2 != "nan" and p1 and p2:
+    if p1 and p2 and p1 != "nan" and p2 != "nan":
         pages = f"{p1}-{p2}"
     elif art and art != "nan":
         pages = f"Article {art}"
@@ -169,7 +159,7 @@ def build_apa(row):
     return apa
 
 #############################################################
-# Vectorised Similarity
+# Similarity
 #############################################################
 def vector_similarity(query_vec, emb_matrix):
     qn = np.linalg.norm(query_vec)
@@ -177,41 +167,40 @@ def vector_similarity(query_vec, emb_matrix):
     return emb_matrix @ query_vec / (dn * qn + 1e-9)
 
 #############################################################
-# GPT REVIEW (with JSON repair)
+# GPT REVIEW — STRUCTURED COMMENTS VERSION
 #############################################################
 def gpt_review(title, gap, refs, top10_titles, style_choice):
 
     top10_text = "; ".join(top10_titles)
 
     prompt = f"""
-You are an academic reviewer for journals such as Automation in Construction, ECAM, and ITcon.
+You are a senior academic reviewer for journals such as Automation in Construction, ECAM, and ITcon.
 
-Your role is to provide a structured, detailed assessment of the research gap.
+Provide a detailed, structured review.
 
-Journal style required: {style_choice}
+Journal style: {style_choice}
 
 TOP 10 RELEVANT PAPER TITLES:
 {top10_text}
 
 TASKS (RETURN JSON ONLY):
 
-1. Provide a score (0–10) for:
+1. Provide scores (0–10):
    - Novelty
    - Significance
    - Clarity
    - Citation quality
 
 2. Provide structured reviewer comments:
-   - "good_points": List 3–5 strengths of the research gap.
-   - "improvements": List 3–5 areas that need improvement.
-   - "novelty_comment": A detailed explanation of the novelty.
-   - "significance_comment": A detailed explanation of the importance and contribution.
-   - "citation_comment": A detailed evaluation of citation relevance, quality, and sufficiency.
+   - "good_points": 3–5 strengths
+   - "improvements": 3–5 issues or missing elements
+   - "novelty_comment": detailed critique of novelty
+   - "significance_comment": detailed critique of contribution
+   - "citation_comment": evaluation of citation sufficiency and relevance
 
-3. Rewrite the research gap in **250–300 words**, academic journal style, with strong structure and critical tone.
+3. Rewrite the research gap in 250–300 words in journal style.
 
-RETURN JSON ONLY IN THIS EXACT FORMAT:
-
+USE THIS EXACT JSON FORMAT:
 {{
 "novelty_score": 0,
 "significance_score": 0,
@@ -231,7 +220,6 @@ Gap: {gap}
 References: {refs}
 """
 
-    # GPT CALL
     response = client.chat.completions.create(
         model="gpt-4.1",
         temperature=0.0,
@@ -241,7 +229,7 @@ References: {refs}
 
     raw = response.choices[0].message.content
 
-    # ---- JSON REPAIR ----
+    # JSON REPAIR
     try:
         return json.loads(raw)
     except:
@@ -262,11 +250,8 @@ References: {refs}
                 "rewritten_gap": gap
             }
 
-
-
-
 #############################################################
-# UI
+# UI INPUT
 #############################################################
 st.title("📄 Research Gap Evaluation")
 
@@ -289,7 +274,7 @@ if st.button("Run Evaluation"):
         top10 = df_docs.sort_values("similarity", ascending=False).head(10)
         top10_titles = top10["Title"].tolist()
 
-        # APA extraction
+        # Build APA references
         apa_list = []
         for t in top10_titles:
             row = df_scopus[df_scopus["Title"] == t]
@@ -298,47 +283,56 @@ if st.button("Run Evaluation"):
             else:
                 apa_list.append(f"{t} (metadata not found)")
 
-        # GPT Evaluation
+        # GPT Review
         gpt_out = gpt_review(title, gap, refs, top10_titles, style_choice)
 
         # METRICS
         col1, col2, col3, col4 = st.columns(4)
 
-        col1.markdown(f"""<div class="metric-card">
-        <div class="metric-title">🧠 Novelty</div>
-        <div class="metric-value">{gpt_out['novelty_score']}/10</div></div>""", unsafe_allow_html=True)
+        col1.markdown(f"""<div class='metric-card'>
+        <div class='metric-title'>🧠 Novelty</div>
+        <div class='metric-value'>{gpt_out['novelty_score']}/10</div></div>""", unsafe_allow_html=True)
 
-        col2.markdown(f"""<div class="metric-card">
-        <div class="metric-title">🔬 Significance</div>
-        <div class="metric-value">{gpt_out['significance_score']}/10</div></div>""", unsafe_allow_html=True)
+        col2.markdown(f"""<div class='metric-card'>
+        <div class='metric-title'>🔬 Significance</div>
+        <div class='metric-value'>{gpt_out['significance_score']}/10</div></div>""", unsafe_allow_html=True)
 
-        col3.markdown(f"""<div class="metric-card">
-        <div class="metric-title">📝 Clarity</div>
-        <div class="metric-value">{gpt_out['clarity_score']}/10</div></div>""", unsafe_allow_html=True)
+        col3.markdown(f"""<div class='metric-card'>
+        <div class='metric-title'>📝 Clarity</div>
+        <div class='metric-value'>{gpt_out['clarity_score']}/10</div></div>""", unsafe_allow_html=True)
 
-        col4.markdown(f"""<div class="metric-card">
-        <div class="metric-title">🔗 Citation Score</div>
-        <div class="metric-value">{gpt_out['citation_score']}/10</div></div>""", unsafe_allow_html=True)
+        col4.markdown(f"""<div class='metric-card'>
+        <div class='metric-title'>📚 Citation</div>
+        <div class='metric-value'>{gpt_out['citation_score']}/10</div></div>""", unsafe_allow_html=True)
 
         # TABS
-        tab1, tab2, tab3, tab4 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📚 Top 10 Literature",
-            "🔬 GPT Comments",
-            "📝 Rewritten Gap",
-            "📑 APA References"
+            "⭐ Good Points",
+            "🚧 Improvements",
+            "🔎 Novelty & Significance",
+            "📝 Rewritten Gap"
         ])
 
         with tab1:
-            st.write(top10[["Title", "Year", "DOI", "similarity"]])
+            st.write(top10[["Title","Year","DOI","similarity"]])
 
         with tab2:
-            for c in gpt_out["comments"]:
-                st.write("•", c)
+            for p in gpt_out["good_points"]:
+                st.write("•", p)
 
         with tab3:
-            st.write(gpt_out["rewritten_gap"])
+            for p in gpt_out["improvements"]:
+                st.write("•", p)
 
         with tab4:
-            for a in apa_list:
-                st.write(a)
+            st.write("### Novelty Comment")
+            st.write(gpt_out["novelty_comment"])
+            st.write("### Significance Comment")
+            st.write(gpt_out["significance_comment"])
+            st.write("### Citation Comment")
+            st.write(gpt_out["citation_comment"])
+
+        with tab5:
+            st.write(gpt_out["rewritten_gap"])
 
