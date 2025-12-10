@@ -196,7 +196,7 @@ def vector_similarity(query_vec, emb_matrix):
 #############################################################
 # GPT REVIEW ENGINE
 #############################################################
-def gpt_review(title, gap, refs, top10_titles, style_choice):
+ddef gpt_review(title, gap, refs, top10_titles, style_choice):
     prompt = f"""
 You are a senior academic reviewer. Analyse and rewrite the student's research gap.
 
@@ -206,14 +206,9 @@ TOP 10 MOST RELEVANT PAPERS:
 {json.dumps(top10_titles, indent=2)}
 
 TASKS:
-1. Evaluate novelty, significance, clarity, citation strength, missing theory.
-2. Provide scores (0-10) for:
-   - Novelty
-   - Significance
-   - Clarity
-   - Citation coverage
-3. Provide 4-6 critical comments.
-4. Rewrite the research gap in 300+ words in academic journal style and based on the 10 papers.
+1. Evaluate novelty, significance, clarity, citation strength.
+2. Provide 4–6 critical comments.
+3. Rewrite the research gap in 300+ words in academic journal style and grounded in the 10 papers.
 
 RETURN JSON ONLY:
 {{
@@ -229,21 +224,29 @@ RETURN JSON ONLY:
     response = client.chat.completions.create(
         model="gpt-4.1",
         temperature=0.0,
-        max_tokens=2000,
+        max_tokens=2500,
         messages=[{"role":"user","content":prompt}]
-)
+    )
 
+    raw = response.choices[0].message.content
+
+    # ---------- JSON REPAIR ----------
     try:
-        return json.loads(response.choices[0].message.content)
+        return json.loads(raw)
     except:
-        return {
-            "novelty_score": 0,
-            "significance_score": 0,
-            "clarity_score": 0,
-            "citation_score": 0,
-            "comments": ["GPT returned invalid JSON"],
-            "rewritten_gap": gap
-        }
+        # try to extract JSON inside text
+        try:
+            cleaned = raw[raw.find("{"): raw.rfind("}")+1]
+            return json.loads(cleaned)
+        except:
+            return {
+                "novelty_score": 0,
+                "significance_score": 0,
+                "clarity_score": 0,
+                "citation_score": 0,
+                "comments": ["GPT returned invalid JSON"],
+                "rewritten_gap": gap
+            }
 
 #############################################################
 # UI INPUT
