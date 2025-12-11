@@ -1,20 +1,17 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# FULL VERSION WITH:
-# - Balanced scoring
-# - Weakness Map
-# - Missing Concepts Detector (Top 10 ONLY)
-# - Score Breakdown Box
-# - APA grounding
-# - Updated validity rules
+# UPDATED FULL WORKING VERSION – DEC 2025
 #############################################################
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import json
+import re
 from io import BytesIO
 from openai import OpenAI
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
 
 #############################################################
 # PAGE CONFIG – QUB BRANDING
@@ -58,13 +55,6 @@ body {{
     font-weight: 700;
     color: {QUB_RED};
 }}
-.score-box {{
-    background-color: white;
-    border: 2px solid {QUB_DARK};
-    padding: 12px;
-    border-radius: 10px;
-    margin-top: 15px;
-}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -74,19 +64,18 @@ body {{
 st.markdown(f"""
 <div class="header">
 <h2>🎓 AI-BIM / Digital Construction Research Gap Checker</h2>
-<p>Evaluate research gaps using similarity, GPT analysis, weakness detection, and missing-concept identification grounded in your Top-10 relevant papers.</p>
+<p>Evaluate research gaps using similarity, Scopus metadata, and GPT analysis.</p>
 </div>
 """, unsafe_allow_html=True)
 
 #############################################################
-# SIDEBAR UPLOADS
+# SIDEBAR
 #############################################################
 st.sidebar.header("Upload Required Files")
 
 PARQUET = st.sidebar.file_uploader("Upload bert_documents_enriched.parquet", type=["parquet"])
 EMB_PATH = st.sidebar.file_uploader("Upload bert_embeddings.npy", type=["npy"])
 SCOPUS = st.sidebar.file_uploader("Upload Scopus.csv", type=["csv"])
-
 api_key = st.sidebar.text_input("Enter OpenAI API Key", type="password")
 
 style_choice = st.sidebar.selectbox(
@@ -95,7 +84,7 @@ style_choice = st.sidebar.selectbox(
 )
 
 if not (PARQUET and EMB_PATH and SCOPUS and api_key):
-    st.warning("Please upload all files and enter API key.")
+    st.warning("Please upload all 3 files and enter an API key.")
     st.stop()
 
 client = OpenAI(api_key=api_key)
@@ -127,23 +116,26 @@ df_docs, embeddings = load_docs(PARQUET, EMB_PATH)
 df_scopus = load_scopus(SCOPUS)
 
 #############################################################
-# ALIGN LENGTHS (CRITICAL FIX)
+# ROW COUNT ALIGN FIX (SOLVES YOUR ERROR)
 #############################################################
 num_docs = len(df_docs)
 num_embs = embeddings.shape[0]
 
 if num_docs != num_embs:
     min_len = min(num_docs, num_embs)
-    st.warning(f"Docs ({num_docs}) ≠ Embeddings ({num_embs}). Using first {min_len}.")
+    st.warning(
+        f"Document count ({num_docs}) ≠ Embedding count ({num_embs}). "
+        f"Using the first {min_len} entries for both."
+    )
     df_docs = df_docs.iloc[:min_len].reset_index(drop=True)
     embeddings = embeddings[:min_len, :]
 
 #############################################################
-# EMBEDDINGS FUNCTION
+# EMBEDDINGS
 #############################################################
 def embed_query(text):
     resp = client.embeddings.create(
-        model="text-embedding-3-large",
+        model="text-embedding-3-large",  # ORIGINAL MODEL RESTORED
         input=text
     )
     return np.array(resp.data[0].embedding)
@@ -181,7 +173,6 @@ def build_apa(row):
 
     return apa
 
-
 #############################################################
 # SIMILARITY
 #############################################################
@@ -191,45 +182,40 @@ def vector_similarity(query_vec, emb_matrix):
     return emb_matrix @ query_vec / (dn * qn + 1e-9)
 
 #############################################################
-# GPT REVIEW (WEAKNESS MAP + BALANCED SCORING)
+# GPT REVIEW
 #############################################################
 def gpt_review(title, gap, refs, top10_titles, style_choice):
 
-    top10_texts = "; ".join(top10_titles)
+    top10_text = "; ".join(top10_titles)
 
     prompt = f"""
-You are a senior academic reviewer.
+You are a senior academic reviewer for Automation in Construction, ECAM, and ITcon.
 
 TASK:
-Provide a structured evaluation AND rewrite of the research gap.
+Provide a structured, critical evaluation and rewrite of the research gap.
 
-SCORING RULES:
-- Score 6–8 for strong but not perfect gaps.
-- Score 9–10 only for exceptional novelty/significance/clarity.
-- Score 5–6 for acceptable but weak gaps.
-- Score <5 for serious issues.
+Journal style: {style_choice}
 
-SENTENCE-LEVEL WEAKNESS:
-Analyse EVERY sentence in the student's gap and label as strong/weak.
+TOP 10 PAPER TITLES:
+{top10_text}
 
 RETURN JSON ONLY:
 {{
-"novelty_score":0,
-"significance_score":0,
-"clarity_score":0,
-"citation_score":0,
-"good_points":[],
-"improvements":[],
-"novelty_comment":"",
-"significance_comment":"",
-"citation_comment":"",
-"rewritten_gap":"",
-"sentence_feedback":[]
+"novelty_score": 0,
+"significance_score": 0,
+"clarity_score": 0,
+"citation_score": 0,
+"good_points": [],
+"improvements": [],
+"novelty_comment": "",
+"significance_comment": "",
+"citation_comment": "",
+"rewritten_gap": ""
 }}
 
-Rules:
+RULES:
 - Rewritten gap MUST be 250–300 words.
-- Use journal style: {style_choice}
+- Academic tone, structured.
 
 TEXT:
 Title: {title}
@@ -237,93 +223,38 @@ Gap: {gap}
 References: {refs}
 """
 
-    resp = client.chat.completions.create(
+    response = client.chat.completions.create(
         model="gpt-4.1",
         temperature=0.0,
-        max_tokens=2600,
+        max_tokens=2400,
         messages=[{"role": "user", "content": prompt}]
     )
 
-    raw = resp.choices[0].message.content
+    raw = response.choices[0].message.content
 
+    # JSON REPAIR
     try:
-        data = json.loads(raw)
+        return json.loads(raw)
     except:
-        cleaned = raw[raw.find("{"):raw.rfind("}")+1]
-        data = json.loads(cleaned)
-
-    if "sentence_feedback" not in data:
-        data["sentence_feedback"] = []
-
-    return data
-
-
-#############################################################
-# GPT — MISSING CONCEPTS DETECTOR (TOP-10 ONLY)
-#############################################################
-def gpt_missing_concepts(gap, top10_df, apa_list):
-
-    combined = ""
-    for i, row in top10_df.iterrows():
-        combined += f"""
-TITLE: {row['Title']}
-ABSTRACT: {row['Abstract']}
-APA: {apa_list[i]}
-"""
-
-    prompt = f"""
-You MUST only use the Top-10 papers provided.
-No external knowledge. No hallucination.
-
-TOP-10 PAPERS:
-{combined}
-
-STUDENT GAP:
-{gap}
-
-TASK:
-1. Extract key concepts from Top-10 papers.
-2. Extract concepts from student gap.
-3. Identify concepts that appear in Top-10 but NOT in the student gap.
-4. For each missing concept, return:
-   - concept
-   - importance
-   - supported_by (APA list)
-   - suggested_sentence
-
-RETURN JSON ONLY:
-{{
-"missing_concepts":[
-    {{
-        "concept":"",
-        "importance":"",
-        "supported_by":[""],
-        "suggested_sentence":""
-    }}
-]
-}}
-"""
-
-    resp = client.chat.completions.create(
-        model="gpt-4.1",
-        temperature=0.0,
-        max_tokens=2500,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    raw = resp.choices[0].message.content
-
-    try:
-        data = json.loads(raw)
-    except:
-        cleaned = raw[raw.find("{"):raw.rfind("}")+1]
-        data = json.loads(cleaned)
-
-    return data
-
+        try:
+            cleaned = raw[raw.find("{"): raw.rfind("}")+1]
+            return json.loads(cleaned)
+        except:
+            return {
+                "novelty_score": 0,
+                "significance_score": 0,
+                "clarity_score": 0,
+                "citation_score": 0,
+                "good_points": [],
+                "improvements": [],
+                "novelty_comment": "",
+                "significance_comment": "",
+                "citation_comment": "",
+                "rewritten_gap": gap
+            }
 
 #############################################################
-# UI INPUTS
+# INPUT UI
 #############################################################
 st.title("📄 Research Gap Evaluation")
 
@@ -331,12 +262,10 @@ title = st.text_input("Enter Dissertation Title")
 gap = st.text_area("Paste Research Gap", height=200)
 refs = st.text_area("Paste References (APA)", height=200)
 
-
 #############################################################
 # RUN EVALUATION
 #############################################################
 if st.button("Run Evaluation"):
-
     with st.spinner("Processing..."):
 
         full_text = f"{title} {gap} {refs}"
@@ -348,6 +277,7 @@ if st.button("Run Evaluation"):
         top10 = df_docs.sort_values("similarity", ascending=False).head(10)
         top10_titles = top10["Title"].tolist()
 
+        # APA list
         apa_list = []
         for t in top10_titles:
             row = df_scopus[df_scopus["Title"] == t]
@@ -356,43 +286,43 @@ if st.button("Run Evaluation"):
             else:
                 apa_list.append(f"{t} (metadata not found)")
 
-        # GPT review
+        # GPT Review
         gpt_out = gpt_review(title, gap, refs, top10_titles, style_choice)
 
-        # Missing concepts
-        missing_out = gpt_missing_concepts(gap, top10, apa_list)
+        #############################################################
+        # UPDATED HARD VALIDITY RULES (FINAL)
+        #############################################################
 
-        #############################################################
-        # VALIDITY RULES
-        #############################################################
         rewritten_gap = gpt_out["rewritten_gap"]
         gap_word_count = len(rewritten_gap.split())
 
-        # Word length penalty
+        # --- Word Count Rule ---
         if gap_word_count >= 200:
-            length_penalty = 0
             length_flag = "valid"
+            length_penalty = 0
         elif 150 <= gap_word_count < 200:
-            length_penalty = 5
             length_flag = "borderline"
+            length_penalty = 5
         else:
-            length_penalty = 15
             length_flag = "invalid"
+            length_penalty = 15
 
-        # Reference penalty
-        ref_count = len([r for r in refs.split("\n") if r.strip()])
+        # --- Reference Count Rule ---
+        ref_list = [r for r in refs.split("\n") if r.strip()]
+        ref_count = len(ref_list)
+
         if ref_count >= 7:
-            ref_penalty = 0
             ref_flag = "valid"
+            ref_penalty = 0
         elif 5 <= ref_count <= 6:
-            ref_penalty = 5
             ref_flag = "borderline"
+            ref_penalty = 5
         else:
-            ref_penalty = 15
             ref_flag = "invalid"
+            ref_penalty = 15
 
-        # Final score
-        raw_score = (
+        # --- TOTAL SCORE ---
+        total_raw = (
             gpt_out["novelty_score"]
             + gpt_out["significance_score"]
             + gpt_out["clarity_score"]
@@ -401,9 +331,9 @@ if st.button("Run Evaluation"):
             - ref_penalty
         )
 
-        total_score = max(0, min(40, raw_score))
+        total_score = max(0, min(40, total_raw))
 
-        # Verdict
+        # --- VERDICT ---
         if length_flag == "invalid" or ref_flag == "invalid":
             verdict = "❌ NOT VALID"
         elif total_score >= 30:
@@ -414,42 +344,50 @@ if st.button("Run Evaluation"):
             verdict = "❌ NOT VALID"
 
         #############################################################
-        # SHOW SCORE BREAKDOWN BOX
+        # METRICS UI
         #############################################################
-        st.markdown(f"""
-        <div class='score-box'>
-        <h4>🔍 Score Breakdown</h4>
-        <p>Novelty: {gpt_out['novelty_score']} / 10</p>
-        <p>Significance: {gpt_out['significance_score']} / 10</p>
-        <p>Clarity: {gpt_out['clarity_score']} / 10</p>
-        <p>Citation Quality: {gpt_out['citation_score']} / 10</p>
+        col1, col2, col3, col4 = st.columns(4)
 
-        <hr>
-        <p>Length Penalty: {length_penalty}</p>
-        <p>Reference Penalty: {ref_penalty}</p>
-        <hr>
+        col1.markdown(
+            f"<div class='metric-card'><div class='metric-title'>Novelty</div>"
+            f"<div class='metric-value'>{gpt_out['novelty_score']}/10</div></div>",
+            unsafe_allow_html=True
+        )
 
-        <h4>Total Score: {total_score} / 40</h4>
-        <h3>Verdict: {verdict}</h3>
-        </div>
-        """, unsafe_allow_html=True)
+        col2.markdown(
+            f"<div class='metric-card'><div class='metric-title'>Significance</div>"
+            f"<div class='metric-value'>{gpt_out['significance_score']}/10</div></div>",
+            unsafe_allow_html=True
+        )
+
+        col3.markdown(
+            f"<div class='metric-card'><div class='metric-title'>Clarity</div>"
+            f"<div class='metric-value'>{gpt_out['clarity_score']}/10</div></div>",
+            unsafe_allow_html=True
+        )
+
+        col4.markdown(
+            f"<div class='metric-card'><div class='metric-title'>Citation Quality</div>"
+            f"<div class='metric-value'>{gpt_out['citation_score']}/10</div></div>",
+            unsafe_allow_html=True
+        )
+
+        st.subheader(f"Overall Verdict: {verdict}")
 
         #############################################################
         # TABS
         #############################################################
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📚 Top 10 Literature",
             "⭐ Good Points",
             "🚧 Improvements",
             "🔎 Novelty & Significance",
             "📝 Rewritten Gap",
-            "📑 APA References",
-            "🩻 Weakness Map",
-            "🧭 Missing Concepts"
+            "📑 APA References"
         ])
 
         with tab1:
-            st.write(top10[["Title", "Year", "DOI", "similarity"]])
+            st.write(top10[["Title","Year","DOI","similarity"]])
 
         with tab2:
             for p in gpt_out["good_points"]:
@@ -473,45 +411,3 @@ if st.button("Run Evaluation"):
         with tab6:
             for ref in apa_list:
                 st.write("•", ref)
-
-        with tab7:
-            st.write("### Sentence-Level Weakness Map")
-            fb = gpt_out.get("sentence_feedback", [])
-
-            if not fb:
-                st.info("No sentence-level feedback returned.")
-            else:
-                # Highlighted version
-                marked = []
-                for s in fb:
-                    sentence = s["sentence"]
-                    label = s["label"].lower()
-                    color = "#ffe6e6" if label == "weak" else "#e6ffe6"
-                    marked.append(
-                        f"<span style='background-color:{color}; padding:3px 5px; margin:2px; display:inline-block;'>{sentence}</span>"
-                    )
-                html_all = "<div style='line-height:1.8;'>" + " ".join(marked) + "</div>"
-                st.markdown(html_all, unsafe_allow_html=True)
-
-                st.write("### Detailed Feedback")
-                for s in fb:
-                    st.write(f"**Sentence:** {s['sentence']}")
-                    st.write(f"- Label: {s['label']}")
-                    st.write(f"- Comment: {s['comment']}")
-                    st.write("---")
-
-        with tab8:
-            st.write("### Missing Concepts (Top-10 Grounded)")
-            missing = missing_out.get("missing_concepts", [])
-
-            if not missing:
-                st.info("No missing concepts detected.")
-            else:
-                for m in missing:
-                    st.write(f"#### 🧩 {m['concept']}")
-                    st.write(f"- Importance: {m['importance']}")
-                    st.write("- Supported by:")
-                    for ref in m["supported_by"]:
-                        st.write(f"  • {ref}")
-                    st.write(f"- Suggested sentence: {m['suggested_sentence']}")
-                    st.write("---")
