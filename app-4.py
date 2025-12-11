@@ -1,6 +1,7 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# UPDATED FULL VERSION – NO REWRITING – DOI + THRESHOLD 5
+# FULL VERSION – WITH FULL ABSTRACTS – NO REWRITING
+# DOI + FUZZY MATCH OVERRIDE, THRESHOLD 5, GPT>=20
 #############################################################
 
 import streamlit as st
@@ -64,7 +65,7 @@ body {{
 st.markdown(f"""
 <div class="header">
 <h2>🎓 AI-BIM / Digital Construction Research Gap Checker</h2>
-<p>Evaluate research gaps using similarity, Scopus metadata, and GPT reviewer scores.</p>
+<p>Evaluate research gaps using Top-10 literature, abstracts, Scopus metadata, and GPT reviewer analysis.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -128,7 +129,7 @@ if num_docs != num_embs:
     embeddings = embeddings[:min_len, :]
 
 #############################################################
-# EMBEDDING FUNCTION
+# EMBEDDING CALL
 #############################################################
 def embed_query(text):
     resp = client.embeddings.create(
@@ -179,16 +180,21 @@ def vector_similarity(query_vec, emb_matrix):
     return emb_matrix @ query_vec / (dn * qn + 1e-9)
 
 #############################################################
-# GPT REVIEW — NO REWRITING
+# GPT REVIEW WITH FULL ABSTRACTS
 #############################################################
-def gpt_review(title, gap, refs, top10_titles, style_choice):
+def gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice):
 
-    top10_text = "; ".join(top10_titles)
+    combined_abstracts = "\n\n".join(
+        [
+            f"PAPER {i+1}:\nTITLE: {t}\nABSTRACT:\n{a}"
+            for i, (t, a) in enumerate(zip(top10_titles, top10_abstracts))
+        ]
+    )
 
     prompt = f"""
-You are a journal reviewer for Automation in Construction, ECAM, and ITcon.
+You are a senior academic reviewer for Automation in Construction, ECAM, and ITcon.
 
-TASK: Evaluate the clarity, novelty, and significance of the provided research gap.
+You will evaluate the research gap using the ORIGINAL student gap and the Top-10 most relevant abstracts from the literature.
 
 RETURN JSON ONLY in this format:
 {{
@@ -203,19 +209,28 @@ RETURN JSON ONLY in this format:
 "citation_comment": ""
 }}
 
-WITHOUT rewriting the gap.
+SCORING RUBRIC:
+Novelty: 0–3 low, 4–6 moderate, 7–8 strong, 9–10 outstanding
+Significance: 0–3 low, 4–6 moderate, 7–8 high, 9–10 transformative
+Clarity: 0–3 unclear, 4–6 acceptable, 7–8 clear, 9–10 excellent
+Citation: 0–3 weak, 4–6 acceptable, 7–8 strong, 9–10 excellent
 
-TEXT:
-Title: {title}
-Gap: {gap}
-References: {refs}
-Top-10 Titles: {top10_text}
+DO NOT rewrite the gap. Only evaluate it.
+
+STUDENT GAP:
+{gap}
+
+REFERENCES PROVIDED:
+{refs}
+
+TOP-10 MOST RELEVANT PAPERS (WITH FULL ABSTRACTS):
+{combined_abstracts}
 """
 
     response = client.chat.completions.create(
         model="gpt-4.1",
         temperature=0.0,
-        max_tokens=1800,
+        max_tokens=5000,
         messages=[{"role": "user", "content": prompt}]
     )
 
@@ -240,8 +255,9 @@ Top-10 Titles: {top10_text}
                 "citation_comment": ""
             }
 
+
 #############################################################
-# MAIN UI INPUT
+# MAIN UI
 #############################################################
 st.title("📄 Research Gap Evaluation")
 
@@ -255,24 +271,24 @@ refs = st.text_area("Paste References (APA)", height=200)
 if st.button("Run Evaluation"):
     with st.spinner("Processing..."):
 
-        full_text = f"{title} {gap} {refs}"
-        q_vec = embed_query(full_text)
+        q_vec = embed_query(f"{title} {gap} {refs}")
 
         sims = vector_similarity(q_vec, embeddings)
         df_docs["similarity"] = sims
 
         top10 = df_docs.sort_values("similarity", ascending=False).head(10)
         top10_titles = top10["Title"].tolist()
+        top10_abstracts = top10["Abstract"].fillna("").tolist()
 
         apa_list = []
         for t in top10_titles:
             row = df_scopus[df_scopus["Title"] == t]
-            apa_list.append(build_apa(row.iloc[0]) if len(row) > 0 else f"{t} (metadata not found)")
+            apa_list.append(build_apa(row.iloc[0]) if len(row) else f"{t} (metadata not found)")
 
-        gpt_out = gpt_review(title, gap, refs, top10_titles, style_choice)
+        gpt_out = gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice)
 
         #############################################################
-        # HARD VALIDITY RULES USING ORIGINAL GAP
+        # HARD VALIDITY RULES (ORIGINAL GAP ONLY)
         #############################################################
 
         gap_word_count = len(gap.split())
@@ -311,7 +327,7 @@ if st.button("Run Evaluation"):
         total_score = max(0, min(40, total_raw))
 
         #############################################################
-        # OVERRIDE RULE — IMPROVEMENTS + DOI/TITLE + GPT >= 20
+        # OVERRIDE RULE (IMPROVEMENTS + DOI/ TITLE + GPT >= 20)
         #############################################################
 
         original_text = gap.lower()
@@ -340,16 +356,16 @@ if st.button("Run Evaluation"):
             top10_dois.append((title, doi))
 
         def fuzzy_contains(a, b):
-            a_clean = re.sub(r"[^a-z0-9 ]", "", a.lower())
-            b_clean = re.sub(r"[^a-z0-9 ]", "", b.lower())
+            a_clean = re.sub(r"[^a-z0-9 ]", "", a)
+            b_clean = re.sub(r"[^a-z0-9 ]", "", b)
             return b_clean[:12] in a_clean
 
         lit_hits = 0
         for title, doi in top10_dois:
-            if doi != "" and doi in ref_text.replace(" ", ""):
+            if doi and doi in ref_text.replace(" ", ""):
                 lit_hits += 1
                 continue
-            if fuzzy_contains(ref_text, title):
+            if fuzzy_contains(ref_text, title.lower()):
                 lit_hits += 1
 
         improvements_ok = improvement_ratio >= 0.7
@@ -361,9 +377,8 @@ if st.button("Run Evaluation"):
         #############################################################
         # VERDICT
         #############################################################
-
         if forced_valid:
-            verdict = "🟢 VALID (Override Rule Triggered)"
+            verdict = "🟢 VALID (Override Triggered)"
         elif length_flag == "invalid" or ref_flag == "invalid":
             verdict = "❌ NOT VALID"
         elif total_score >= 30:
@@ -374,10 +389,9 @@ if st.button("Run Evaluation"):
             verdict = "❌ NOT VALID"
 
         #############################################################
-        # METRICS UI
+        # METRICS DISPLAY
         #############################################################
         col1, col2, col3, col4 = st.columns(4)
-
         col1.markdown(f"<div class='metric-card'><div class='metric-title'>Novelty</div><div class='metric-value'>{gpt_out['novelty_score']}/10</div></div>", unsafe_allow_html=True)
         col2.markdown(f"<div class='metric-card'><div class='metric-title'>Significance</div><div class='metric-value'>{gpt_out['significance_score']}/10</div></div>", unsafe_allow_html=True)
         col3.markdown(f"<div class='metric-card'><div class='metric-title'>Clarity</div><div class='metric-value'>{gpt_out['clarity_score']}/10</div></div>", unsafe_allow_html=True)
@@ -386,7 +400,7 @@ if st.button("Run Evaluation"):
         st.subheader(f"Overall Verdict: {verdict}")
 
         #############################################################
-        # TABS — NO REWRITTEN GAP TAB ANYMORE
+        # TABS
         #############################################################
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📚 Top 10 Literature",
