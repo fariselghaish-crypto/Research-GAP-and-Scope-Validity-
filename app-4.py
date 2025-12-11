@@ -1,4 +1,3 @@
-this one is perfectly working with the data, issues happened after your changes
 
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
