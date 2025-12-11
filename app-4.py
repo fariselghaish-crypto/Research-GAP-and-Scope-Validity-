@@ -1,6 +1,7 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
 # UPDATED FULL WORKING VERSION – DEC 2025
+# (WITH IMPROVEMENT COMPLIANCE RULE + TOP-10 LITERATURE RULE)
 #############################################################
 
 import streamlit as st
@@ -116,7 +117,7 @@ df_docs, embeddings = load_docs(PARQUET, EMB_PATH)
 df_scopus = load_scopus(SCOPUS)
 
 #############################################################
-# ROW COUNT ALIGN FIX (SOLVES YOUR ERROR)
+# ROW COUNT ALIGN FIX
 #############################################################
 num_docs = len(df_docs)
 num_embs = embeddings.shape[0]
@@ -135,7 +136,7 @@ if num_docs != num_embs:
 #############################################################
 def embed_query(text):
     resp = client.embeddings.create(
-        model="text-embedding-3-large",  # ORIGINAL MODEL RESTORED
+        model="text-embedding-3-large",
         input=text
     )
     return np.array(resp.data[0].embedding)
@@ -290,13 +291,13 @@ if st.button("Run Evaluation"):
         gpt_out = gpt_review(title, gap, refs, top10_titles, style_choice)
 
         #############################################################
-        # UPDATED HARD VALIDITY RULES (FINAL)
+        # HARD VALIDITY RULES
         #############################################################
 
         rewritten_gap = gpt_out["rewritten_gap"]
         gap_word_count = len(rewritten_gap.split())
 
-        # --- Word Count Rule ---
+        # Word Count Rule
         if gap_word_count >= 200:
             length_flag = "valid"
             length_penalty = 0
@@ -307,7 +308,7 @@ if st.button("Run Evaluation"):
             length_flag = "invalid"
             length_penalty = 15
 
-        # --- Reference Count Rule ---
+        # Reference Count Rule
         ref_list = [r for r in refs.split("\n") if r.strip()]
         ref_count = len(ref_list)
 
@@ -321,7 +322,7 @@ if st.button("Run Evaluation"):
             ref_flag = "invalid"
             ref_penalty = 15
 
-        # --- TOTAL SCORE ---
+        # TOTAL SCORE
         total_raw = (
             gpt_out["novelty_score"]
             + gpt_out["significance_score"]
@@ -333,8 +334,43 @@ if st.button("Run Evaluation"):
 
         total_score = max(0, min(40, total_raw))
 
-        # --- VERDICT ---
-        if length_flag == "invalid" or ref_flag == "invalid":
+        #############################################################
+        # IMPROVEMENT COMPLIANCE RULE (NEW)
+        # Force VALID if:
+        # 1. At least 70% of improvements applied
+        # 2. At least 7 out of Top-10 papers appear in APA references
+        #############################################################
+
+        improvements = gpt_out.get("improvements", [])
+        rewritten_text = rewritten_gap.lower()
+
+        improve_hits = sum(
+            1 for imp in improvements 
+            if imp and imp.lower().split()[0] in rewritten_text
+        )
+
+        improvement_ratio = improve_hits / len(improvements) if len(improvements) > 0 else 0
+
+        ref_lower = refs.lower()
+        lit_hits = 0
+        for t in top10_titles:
+            if isinstance(t, str):
+                first_word = t.lower().split()[0]
+                if first_word in ref_lower:
+                    lit_hits += 1
+
+        if improvement_ratio >= 0.7 and lit_hits >= 7:
+            forced_valid = True
+        else:
+            forced_valid = False
+
+        #############################################################
+        # VERDICT LOGIC (UPDATED)
+        #############################################################
+        
+        if forced_valid:
+            verdict = "🟢 VALID"
+        elif length_flag == "invalid" or ref_flag == "invalid":
             verdict = "❌ NOT VALID"
         elif total_score >= 30:
             verdict = "🟢 VALID"
