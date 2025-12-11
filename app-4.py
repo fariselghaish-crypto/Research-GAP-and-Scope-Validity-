@@ -1,7 +1,6 @@
-
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# UPDATED FULL WORKING VERSION – DEC 2025
+# VERSION: FULL – STRICT SCORING – APA REFERENCES – UPDATED RULES
 #############################################################
 
 import streamlit as st
@@ -70,7 +69,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 #############################################################
-# SIDEBAR
+# SIDEBAR – Uploads
 #############################################################
 st.sidebar.header("Upload Required Files")
 
@@ -117,32 +116,17 @@ df_docs, embeddings = load_docs(PARQUET, EMB_PATH)
 df_scopus = load_scopus(SCOPUS)
 
 #############################################################
-# ROW COUNT ALIGN FIX (SOLVES YOUR ERROR)
-#############################################################
-num_docs = len(df_docs)
-num_embs = embeddings.shape[0]
-
-if num_docs != num_embs:
-    min_len = min(num_docs, num_embs)
-    st.warning(
-        f"Document count ({num_docs}) ≠ Embedding count ({num_embs}). "
-        f"Using the first {min_len} entries for both."
-    )
-    df_docs = df_docs.iloc[:min_len].reset_index(drop=True)
-    embeddings = embeddings[:min_len, :]
-
-#############################################################
 # EMBEDDINGS
 #############################################################
 def embed_query(text):
     resp = client.embeddings.create(
-        model="text-embedding-3-large",  # ORIGINAL MODEL RESTORED
+        model="text-embedding-3-large",
         input=text
     )
     return np.array(resp.data[0].embedding)
 
 #############################################################
-# APA BUILDER
+# APA Builder
 #############################################################
 def build_apa(row):
     authors = row.get("Authors", "")
@@ -183,19 +167,19 @@ def vector_similarity(query_vec, emb_matrix):
     return emb_matrix @ query_vec / (dn * qn + 1e-9)
 
 #############################################################
-# GPT REVIEW
+# GPT REVIEW – STRICT, STRUCTURED, JSON-PROOF
 #############################################################
 def gpt_review(title, gap, refs, top10_titles, style_choice):
 
     top10_text = "; ".join(top10_titles)
 
     prompt = f"""
-You are a senior academic reviewer for Automation in Construction, ECAM, and ITcon.
+You are a senior academic reviewer for journals such as Automation in Construction, ECAM, and ITcon.
 
 TASK:
-Provide a structured, critical evaluation and rewrite of the research gap.
+Provide a structured, detailed, critical evaluation and rewrite of the research gap.
 
-Journal style: {style_choice}
+Journal style required: {style_choice}
 
 TOP 10 PAPER TITLES:
 {top10_text}
@@ -216,7 +200,7 @@ RETURN JSON ONLY:
 
 RULES:
 - Rewritten gap MUST be 250–300 words.
-- Academic tone, structured.
+- Use academic tone, critical, structured.
 
 TEXT:
 Title: {title}
@@ -255,7 +239,7 @@ References: {refs}
             }
 
 #############################################################
-# INPUT UI
+# UI INPUT
 #############################################################
 st.title("📄 Research Gap Evaluation")
 
@@ -278,7 +262,7 @@ if st.button("Run Evaluation"):
         top10 = df_docs.sort_values("similarity", ascending=False).head(10)
         top10_titles = top10["Title"].tolist()
 
-        # APA list
+        # Build APA references for top 10
         apa_list = []
         for t in top10_titles:
             row = df_scopus[df_scopus["Title"] == t]
@@ -287,17 +271,18 @@ if st.button("Run Evaluation"):
             else:
                 apa_list.append(f"{t} (metadata not found)")
 
-        # GPT Review
+        # GPT REVIEW
         gpt_out = gpt_review(title, gap, refs, top10_titles, style_choice)
 
         #############################################################
-        # UPDATED HARD VALIDITY RULES (FINAL)
+        # HARD VALIDITY RULES (UPDATED)
         #############################################################
 
+        # Extract rewritten gap
         rewritten_gap = gpt_out["rewritten_gap"]
         gap_word_count = len(rewritten_gap.split())
 
-        # --- Word Count Rule ---
+        # --- Word count rule ---
         if gap_word_count >= 200:
             length_flag = "valid"
             length_penalty = 0
@@ -308,7 +293,7 @@ if st.button("Run Evaluation"):
             length_flag = "invalid"
             length_penalty = 15
 
-        # --- Reference Count Rule ---
+        # --- Reference count rule ---
         ref_list = [r for r in refs.split("\n") if r.strip()]
         ref_count = len(ref_list)
 
@@ -322,7 +307,7 @@ if st.button("Run Evaluation"):
             ref_flag = "invalid"
             ref_penalty = 15
 
-        # --- TOTAL SCORE ---
+        # --- FINAL SCORE CALCULATION ---
         total_raw = (
             gpt_out["novelty_score"]
             + gpt_out["significance_score"]
@@ -332,9 +317,10 @@ if st.button("Run Evaluation"):
             - ref_penalty
         )
 
+        # Ensure score stays between 0 and 40
         total_score = max(0, min(40, total_raw))
 
-        # --- VERDICT ---
+        # --- FINAL VERDICT ---
         if length_flag == "invalid" or ref_flag == "invalid":
             verdict = "❌ NOT VALID"
         elif total_score >= 30:
