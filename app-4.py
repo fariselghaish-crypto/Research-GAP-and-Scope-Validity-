@@ -1,7 +1,7 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
 # UPDATED FULL WORKING VERSION – DEC 2025
-# (WITH IMPROVEMENT COMPLIANCE RULE + TOP-10 LITERATURE RULE)
+# (WITH DOI MATCHING + FUZZY TITLE MATCH + THRESHOLD = 5)
 #############################################################
 
 import streamlit as st
@@ -233,7 +233,6 @@ References: {refs}
 
     raw = response.choices[0].message.content
 
-    # JSON REPAIR
     try:
         return json.loads(raw)
     except:
@@ -278,7 +277,6 @@ if st.button("Run Evaluation"):
         top10 = df_docs.sort_values("similarity", ascending=False).head(10)
         top10_titles = top10["Title"].tolist()
 
-        # APA list
         apa_list = []
         for t in top10_titles:
             row = df_scopus[df_scopus["Title"] == t]
@@ -287,7 +285,6 @@ if st.button("Run Evaluation"):
             else:
                 apa_list.append(f"{t} (metadata not found)")
 
-        # GPT Review
         gpt_out = gpt_review(title, gap, refs, top10_titles, style_choice)
 
         #############################################################
@@ -297,7 +294,6 @@ if st.button("Run Evaluation"):
         rewritten_gap = gpt_out["rewritten_gap"]
         gap_word_count = len(rewritten_gap.split())
 
-        # Word Count Rule
         if gap_word_count >= 200:
             length_flag = "valid"
             length_penalty = 0
@@ -308,7 +304,6 @@ if st.button("Run Evaluation"):
             length_flag = "invalid"
             length_penalty = 15
 
-        # Reference Count Rule
         ref_list = [r for r in refs.split("\n") if r.strip()]
         ref_count = len(ref_list)
 
@@ -322,7 +317,6 @@ if st.button("Run Evaluation"):
             ref_flag = "invalid"
             ref_penalty = 15
 
-        # TOTAL SCORE
         total_raw = (
             gpt_out["novelty_score"]
             + gpt_out["significance_score"]
@@ -335,37 +329,62 @@ if st.button("Run Evaluation"):
         total_score = max(0, min(40, total_raw))
 
         #############################################################
-        # IMPROVEMENT COMPLIANCE RULE (NEW)
-        # Force VALID if:
-        # 1. At least 70% of improvements applied
-        # 2. At least 7 out of Top-10 papers appear in APA references
+        # IMPROVEMENT COMPLIANCE RULE — UPDATED (DOI + FUZZY + TH=5)
         #############################################################
 
         improvements = gpt_out.get("improvements", [])
         rewritten_text = rewritten_gap.lower()
 
         improve_hits = sum(
-            1 for imp in improvements 
+            1 for imp in improvements
             if imp and imp.lower().split()[0] in rewritten_text
         )
 
         improvement_ratio = improve_hits / len(improvements) if len(improvements) > 0 else 0
 
-        ref_lower = refs.lower()
-        lit_hits = 0
-        for t in top10_titles:
-            if isinstance(t, str):
-                first_word = t.lower().split()[0]
-                if first_word in ref_lower:
-                    lit_hits += 1
+        ref_text = refs.lower()
 
-        if improvement_ratio >= 0.7 and lit_hits >= 7:
-            forced_valid = True
-        else:
-            forced_valid = False
+        def normalize_doi(text):
+            if not isinstance(text, str):
+                return ""
+            text = text.lower().strip()
+            text = text.replace("https://doi.org/", "")
+            text = text.replace("http://doi.org/", "")
+            text = text.replace("doi:", "")
+            text = text.replace(" ", "")
+            return text
+
+        top10_dois = []
+        for title in top10_titles:
+            row = df_scopus[df_scopus["Title"] == title]
+            if len(row) > 0:
+                doi = normalize_doi(str(row.iloc[0].get("DOI", "")))
+                top10_dois.append((title, doi))
+            else:
+                top10_dois.append((title, ""))
+
+        def fuzzy_contains(a, b):
+            a_clean = re.sub(r"[^a-z0-9 ]", "", a.lower())
+            b_clean = re.sub(r"[^a-z0-9 ]", "", b.lower())
+            return b_clean[:12] in a_clean
+
+        lit_hits = 0
+        for title, doi in top10_dois:
+
+            if doi != "" and doi in ref_text.replace(" ", ""):
+                lit_hits += 1
+                continue
+
+            if fuzzy_contains(ref_text, title):
+                lit_hits += 1
+
+        literature_ok = lit_hits >= 5
+        improvements_ok = improvement_ratio >= 0.7
+
+        forced_valid = literature_ok and improvements_ok
 
         #############################################################
-        # VERDICT LOGIC (UPDATED)
+        # VERDICT LOGIC
         #############################################################
         
         if forced_valid:
