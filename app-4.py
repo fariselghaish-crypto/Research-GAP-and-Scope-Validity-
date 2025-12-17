@@ -1,7 +1,6 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# FULL VERSION – WITH FULL ABSTRACTS – NO REWRITING
-# DOI + FUZZY MATCH OVERRIDE, THRESHOLD 5, GPT>=20
+# FULL VERSION – FIXED UI – TIGER BOXES WORKING – APA FIXED
 #############################################################
 
 import streamlit as st
@@ -11,8 +10,6 @@ import json
 import re
 from io import BytesIO
 from openai import OpenAI
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
 
 #############################################################
 # PAGE CONFIG – QUB BRANDING
@@ -24,7 +21,7 @@ QUB_DARK = "#002147"
 QUB_LIGHT = "#F5F5F5"
 
 #############################################################
-# CSS
+# CSS FIXED
 #############################################################
 st.markdown(f"""
 <style>
@@ -37,24 +34,6 @@ body {{
     padding: 25px 40px;
     border-radius: 10px;
     color: white;
-}}
-.metric-card {{
-    background-color: white;
-    border-left: 6px solid {QUB_RED};
-    padding: 18px;
-    border-radius: 12px;
-    border: 1px solid #ddd;
-    text-align: center;
-}}
-.metric-title {{
-    font-size: 16px;
-    font-weight: 600;
-    color: {QUB_DARK};
-}}
-.metric-value {{
-    font-size: 28px;
-    font-weight: 700;
-    color: {QUB_RED};
 }}
 </style>
 """, unsafe_allow_html=True)
@@ -102,7 +81,8 @@ def load_docs(parquet_file, emb_file):
 @st.cache_resource
 def load_scopus(csv_file):
     raw = csv_file.read()
-    for enc in ["utf-8", "iso-8859-1", "utf-16"]:
+    encodings = ["utf-8", "iso-8859-1", "utf-16"]
+    for enc in encodings:
         try:
             df = pd.read_csv(BytesIO(raw), encoding=enc, low_memory=False)
             df.columns = [c.strip() for c in df.columns]
@@ -119,12 +99,9 @@ df_scopus = load_scopus(SCOPUS)
 #############################################################
 # ALIGN ROW COUNTS
 #############################################################
-num_docs = len(df_docs)
-num_embs = embeddings.shape[0]
-
-if num_docs != num_embs:
-    min_len = min(num_docs, num_embs)
-    st.warning(f"Document count ({num_docs}) ≠ Embeddings count ({num_embs}). Using first {min_len}.")
+if len(df_docs) != embeddings.shape[0]:
+    min_len = min(len(df_docs), embeddings.shape[0])
+    st.warning(f"Mismatch detected. Using first {min_len} rows.")
     df_docs = df_docs.iloc[:min_len].reset_index(drop=True)
     embeddings = embeddings[:min_len, :]
 
@@ -174,29 +151,27 @@ def build_apa(row):
 #############################################################
 # SIMILARITY
 #############################################################
-def vector_similarity(query_vec, emb_matrix):
-    qn = np.linalg.norm(query_vec)
-    dn = np.linalg.norm(emb_matrix, axis=1)
-    return emb_matrix @ query_vec / (dn * qn + 1e-9)
+def vector_similarity(qv, mat):
+    qn = np.linalg.norm(qv)
+    dn = np.linalg.norm(mat, axis=1)
+    return mat @ qv / (dn * qn + 1e-9)
 
 #############################################################
-# GPT REVIEW WITH FULL ABSTRACTS
+# GPT REVIEW CLEANED
 #############################################################
 def gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice):
 
     combined_abstracts = "\n\n".join(
-        [
-            f"PAPER {i+1}:\nTITLE: {t}\nABSTRACT:\n{a}"
-            for i, (t, a) in enumerate(zip(top10_titles, top10_abstracts))
-        ]
+        [f"PAPER {i+1}:\nTITLE: {t}\nABSTRACT:\n{a}"
+         for i, (t, a) in enumerate(zip(top10_titles, top10_abstracts))]
     )
 
     prompt = f"""
-You are a senior academic reviewer for Automation in Construction, ECAM, and ITcon.
+You are a senior reviewer for Automation in Construction, ECAM, and ITcon.
 
-Evaluate the student's research gap using the ORIGINAL text and the Top-10 most relevant abstracts.
+Evaluate the student's research gap using the ORIGINAL text only. Do NOT rewrite it.
 
-RETURN JSON ONLY:
+Return STRICT JSON:
 {{
 "novelty_score": 0,
 "significance_score": 0,
@@ -210,12 +185,10 @@ RETURN JSON ONLY:
 }}
 
 SCORING:
-Novelty: 0–3 low, 4–6 moderate, 7–8 strong, 9–10 outstanding
-Significance: 0–3 low, 4–6 moderate, 7–8 high, 9–10 transformative
-Clarity: 0–3 unclear, 4–6 acceptable, 7–8 clear, 9–10 excellent
-Citation: 0–3 weak, 4–6 acceptable, 7–8 strong, 9–10 excellent
-
-DO NOT rewrite the gap.
+Novelty 0-10
+Significance 0-10
+Clarity 0-10
+Citation 0-10
 
 STUDENT GAP:
 {gap}
@@ -229,8 +202,8 @@ TOP-10 ABSTRACTS:
 
     response = client.chat.completions.create(
         model="gpt-4.1",
-        temperature=0.0,
-        max_tokens=5000,
+        temperature=0,
+        max_tokens=6000,
         messages=[{"role": "user", "content": prompt}]
     )
 
@@ -254,3 +227,90 @@ TOP-10 ABSTRACTS:
                 "significance_comment": "",
                 "citation_comment": ""
             }
+
+#############################################################
+# INPUT BOXES (FIXED)
+#############################################################
+st.markdown("### 📌 Dissertation Title")
+title = st.text_input("", placeholder="Enter dissertation title")
+
+st.markdown("### 📌 Research Gap")
+gap = st.text_area("", height=200, placeholder="Paste the research gap here")
+
+st.markdown("### 📌 APA References")
+refs = st.text_area("", height=200, placeholder="Paste APA references here")
+
+#############################################################
+# RUN BUTTON
+#############################################################
+if st.button("Run Evaluation"):
+    with st.spinner("Processing..."):
+
+        q_vec = embed_query(f"{title} {gap} {refs}")
+        sims = vector_similarity(q_vec, embeddings)
+        df_docs["similarity"] = sims
+
+        top10 = df_docs.sort_values("similarity", ascending=False).head(10)
+        top10_titles = top10["Title"].tolist()
+        top10_abstracts = top10["Abstract"].fillna("").tolist()
+
+        apa_list = []
+        for t in top10_titles:
+            row = df_scopus[df_scopus["Title"] == t]
+            apa_list.append(build_apa(row.iloc[0]) if len(row) else f"{t} (metadata not found)")
+
+        gpt_out = gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice)
+
+        #############################################################
+        # METRIC CARDS (TIGER BOXES FIXED)
+        #############################################################
+        col1, col2, col3, col4 = st.columns(4)
+
+        card_html = """
+        <div style="background-color:white; border-left:6px solid #CC0033; 
+                    padding:16px; border-radius:12px; border:1px solid #ddd;
+                    text-align:center; margin-bottom:10px;">
+            <div style="font-size:16px; font-weight:600; color:#002147;">{title}</div>
+            <div style="font-size:28px; font-weight:700; color:#CC0033;">{value}</div>
+        </div>
+        """
+
+        col1.markdown(card_html.format(title="Novelty", value=f"{gpt_out['novelty_score']}/10"), unsafe_allow_html=True)
+        col2.markdown(card_html.format(title="Significance", value=f"{gpt_out['significance_score']}/10"), unsafe_allow_html=True)
+        col3.markdown(card_html.format(title="Clarity", value=f"{gpt_out['clarity_score']}/10"), unsafe_allow_html=True)
+        col4.markdown(card_html.format(title="Citation Quality", value=f"{gpt_out['citation_score']}/10"), unsafe_allow_html=True)
+
+        #############################################################
+        # RESULTS TABS
+        #############################################################
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "📚 Top 10 Literature",
+            "⭐ Good Points",
+            "🚧 Improvements",
+            "🔎 Reviewer Comments",
+            "📑 APA References"
+        ])
+
+        with tab1:
+            st.write(top10[["Title","Year","DOI","similarity"]])
+
+        with tab2:
+            for p in gpt_out["good_points"]:
+                st.write("•", p)
+
+        with tab3:
+            for p in gpt_out["improvements"]:
+                st.write("•", p)
+
+        with tab4:
+            st.write("### Novelty Comment")
+            st.write(gpt_out["novelty_comment"])
+            st.write("### Significance Comment")
+            st.write(gpt_out["significance_comment"])
+            st.write("### Citation Comment")
+            st.write(gpt_out["citation_comment"])
+
+        with tab5:
+            st.subheader("APA References")
+            for ref in apa_list:
+                st.markdown(f"<p>• {ref}</p>", unsafe_allow_html=True)
