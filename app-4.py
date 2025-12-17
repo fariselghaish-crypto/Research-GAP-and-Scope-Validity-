@@ -194,14 +194,10 @@ def gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice):
     prompt = f"""
 You are a senior academic reviewer for Automation in Construction, ECAM, and ITcon.
 
-You will evaluate the research gap using the ORIGINAL student gap and the Top-10 most relevant abstracts from the literature.
+Evaluate the student's research gap using the ORIGINAL text and the Top-10 most relevant abstracts.
 
-You are a senior academic reviewer for Automation in Construction, ECAM, and ITcon.
-
-You will evaluate the research gap using the ORIGINAL student gap and the Top-10 most relevant abstracts from the literature.
-
-RETURN JSON ONLY in this format:
-{
+RETURN JSON ONLY:
+{{
 "novelty_score": 0,
 "significance_score": 0,
 "clarity_score": 0,
@@ -211,24 +207,23 @@ RETURN JSON ONLY in this format:
 "novelty_comment": "",
 "significance_comment": "",
 "citation_comment": ""
-}
+}}
 
-SCORING RUBRIC:
+SCORING:
 Novelty: 0–3 low, 4–6 moderate, 7–8 strong, 9–10 outstanding
 Significance: 0–3 low, 4–6 moderate, 7–8 high, 9–10 transformative
 Clarity: 0–3 unclear, 4–6 acceptable, 7–8 clear, 9–10 excellent
 Citation: 0–3 weak, 4–6 acceptable, 7–8 strong, 9–10 excellent
 
-
-DO NOT rewrite the gap. Only evaluate it.
+DO NOT rewrite the gap.
 
 STUDENT GAP:
 {gap}
 
-REFERENCES PROVIDED:
+REFERENCES:
 {refs}
 
-TOP-10 MOST RELEVANT PAPERS (WITH FULL ABSTRACTS):
+TOP-10 ABSTRACTS:
 {combined_abstracts}
 """
 
@@ -259,181 +254,3 @@ TOP-10 MOST RELEVANT PAPERS (WITH FULL ABSTRACTS):
                 "significance_comment": "",
                 "citation_comment": ""
             }
-
-
-#############################################################
-# MAIN UI
-#############################################################
-st.title("📄 Research Gap Evaluation")
-
-title = st.text_input("Enter Dissertation Title")
-gap = st.text_area("Paste Research Gap", height=200)
-refs = st.text_area("Paste References (APA)", height=200)
-
-#############################################################
-# RUN EVALUATION
-#############################################################
-if st.button("Run Evaluation"):
-    with st.spinner("Processing..."):
-
-        q_vec = embed_query(f"{title} {gap} {refs}")
-
-        sims = vector_similarity(q_vec, embeddings)
-        df_docs["similarity"] = sims
-
-        top10 = df_docs.sort_values("similarity", ascending=False).head(10)
-        top10_titles = top10["Title"].tolist()
-        top10_abstracts = top10["Abstract"].fillna("").tolist()
-
-        apa_list = []
-        for t in top10_titles:
-            row = df_scopus[df_scopus["Title"] == t]
-            apa_list.append(build_apa(row.iloc[0]) if len(row) else f"{t} (metadata not found)")
-
-        gpt_out = gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice)
-
-        #############################################################
-        # HARD VALIDITY RULES (ORIGINAL GAP ONLY)
-        #############################################################
-
-        gap_word_count = len(gap.split())
-
-        if gap_word_count >= 200:
-            length_flag = "valid"
-            length_penalty = 0
-        elif 150 <= gap_word_count < 200:
-            length_flag = "borderline"
-            length_penalty = 5
-        else:
-            length_flag = "invalid"
-            length_penalty = 15
-
-        ref_list = [r for r in refs.split("\n") if r.strip()]
-        ref_count = len(ref_list)
-
-        if ref_count >= 7:
-            ref_flag = "valid"
-            ref_penalty = 0
-        elif 5 <= ref_count <= 6:
-            ref_flag = "borderline"
-            ref_penalty = 5
-        else:
-            ref_flag = "invalid"
-            ref_penalty = 15
-
-        total_raw = (
-            gpt_out["novelty_score"]
-            + gpt_out["significance_score"]
-            + gpt_out["clarity_score"]
-            + gpt_out["citation_score"]
-            - length_penalty
-            - ref_penalty
-        )
-        total_score = max(0, min(40, total_raw))
-
-        #############################################################
-        # OVERRIDE RULE (IMPROVEMENTS + DOI/ TITLE + GPT >= 20)
-        #############################################################
-
-        original_text = gap.lower()
-        improvements = gpt_out.get("improvements", [])
-
-        improve_hits = sum(
-            1 for imp in improvements
-            if imp and imp.lower().split()[0] in original_text
-        )
-        improvement_ratio = improve_hits / len(improvements) if len(improvements) > 0 else 0
-
-        ref_text = refs.lower()
-
-        def normalize_doi(text):
-            if not isinstance(text, str):
-                return ""
-            text = text.lower().strip()
-            text = text.replace("https://doi.org/", "").replace("http://doi.org/", "")
-            text = text.replace("doi:", "").replace(" ", "")
-            return text
-
-        top10_dois = []
-        for title in top10_titles:
-            row = df_scopus[df_scopus["Title"] == title]
-            doi = normalize_doi(str(row.iloc[0].get("DOI", ""))) if len(row) else ""
-            top10_dois.append((title, doi))
-
-        def fuzzy_contains(a, b):
-            a_clean = re.sub(r"[^a-z0-9 ]", "", a)
-            b_clean = re.sub(r"[^a-z0-9 ]", "", b)
-            return b_clean[:12] in a_clean
-
-        lit_hits = 0
-        for title, doi in top10_dois:
-            if doi and doi in ref_text.replace(" ", ""):
-                lit_hits += 1
-                continue
-            if fuzzy_contains(ref_text, title.lower()):
-                lit_hits += 1
-
-        improvements_ok = improvement_ratio >= 0.7
-        literature_ok = lit_hits >= 5
-        gpt_ok = total_score >= 20
-
-        forced_valid = improvements_ok and literature_ok and gpt_ok
-
-        #############################################################
-        # VERDICT
-        #############################################################
-        if forced_valid:
-            verdict = "🟢 VALID (Override Triggered)"
-        elif length_flag == "invalid" or ref_flag == "invalid":
-            verdict = "❌ NOT VALID"
-        elif total_score >= 30:
-            verdict = "🟢 VALID"
-        elif total_score >= 20:
-            verdict = "🟡 BORDERLINE"
-        else:
-            verdict = "❌ NOT VALID"
-
-        #############################################################
-        # METRICS DISPLAY
-        #############################################################
-        col1, col2, col3, col4 = st.columns(4)
-        col1.markdown(f"<div class='metric-card'><div class='metric-title'>Novelty</div><div class='metric-value'>{gpt_out['novelty_score']}/10</div></div>", unsafe_allow_html=True)
-        col2.markdown(f"<div class='metric-card'><div class='metric-title'>Significance</div><div class='metric-value'>{gpt_out['significance_score']}/10</div></div>", unsafe_allow_html=True)
-        col3.markdown(f"<div class='metric-card'><div class='metric-title'>Clarity</div><div class='metric-value'>{gpt_out['clarity_score']}/10</div></div>", unsafe_allow_html=True)
-        col4.markdown(f"<div class='metric-card'><div class='metric-title'>Citation Quality</div><div class='metric-value'>{gpt_out['citation_score']}/10</div></div>", unsafe_allow_html=True)
-
-        st.subheader(f"Overall Verdict: {verdict}")
-
-        #############################################################
-        # TABS
-        #############################################################
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📚 Top 10 Literature",
-            "⭐ Good Points",
-            "🚧 Improvements",
-            "🔎 Reviewer Comments",
-            "📑 APA References"
-        ])
-
-        with tab1:
-            st.write(top10[["Title","Year","DOI","similarity"]])
-
-        with tab2:
-            for p in gpt_out["good_points"]:
-                st.write("•", p)
-
-        with tab3:
-            for p in gpt_out["improvements"]:
-                st.write("•", p)
-
-        with tab4:
-            st.write("### Novelty Comment")
-            st.write(gpt_out["novelty_comment"])
-            st.write("### Significance Comment")
-            st.write(gpt_out["significance_comment"])
-            st.write("### Citation Comment")
-            st.write(gpt_out["citation_comment"])
-
-        with tab5:
-            for ref in apa_list:
-                st.write("•", ref)
