@@ -157,7 +157,7 @@ def vector_similarity(qv, mat):
     return mat @ qv / (dn * qn + 1e-9)
 
 #############################################################
-# GPT REVIEW CLEANED
+# GPT REVIEW CLEANED (STRICT + REALISTIC SCORING)
 #############################################################
 def gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice):
 
@@ -167,11 +167,13 @@ def gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice):
     )
 
     prompt = f"""
-You are a senior reviewer for Automation in Construction, ECAM, and ITcon.
+You are a senior academic reviewer for Automation in Construction, ECAM, and ITcon.
+You MUST evaluate the research gap with STRICT standards and realistic scoring.
 
-Evaluate the student's research gap using the ORIGINAL text only. Do NOT rewrite it.
+Do NOT rewrite the gap.
+Only evaluate it.
 
-Return STRICT JSON:
+Return STRICT JSON ONLY:
 {{
 "novelty_score": 0,
 "significance_score": 0,
@@ -184,19 +186,57 @@ Return STRICT JSON:
 "citation_comment": ""
 }}
 
-SCORING:
-Novelty 0-10
-Significance 0-10
-Clarity 0-10
-Citation 0-10
+#############################################################
+# STRICT SCORING RUBRIC (USE FULL SCALE)
+#############################################################
+
+IMPORTANT GENERAL RULE:
+Scores 8–10 must be EXTREMELY rare and only given for exceptional, publication-ready work.
+Typical student gaps should fall between 3–6.
+
+NOVELTY (0–10):
+0–2: Generic, repeated widely in literature, not original.
+3–4: Minor originality but overlaps strongly with existing studies.
+5–6: Moderate novelty with some unique angle.
+7: Strong novelty, justified.
+8–10: Only if highly original and clearly distinct from existing top-10 abstracts.
+
+SIGNIFICANCE (0–10):
+0–3: Low academic or practical value.
+4–5: Moderate importance.
+6: Good importance.
+7: High significance, but still requires strong justification.
+8–10: Only if transformative for industry or research.
+
+CLARITY (0–10):
+0–3: Unclear or poorly structured.
+4–6: Acceptable but with issues.
+7: Clear and well expressed.
+8–10: Only if exceptionally clear, concise, and logically structured.
+
+CITATION QUALITY (0–10):
+0–3: Weak or insufficient references.
+4–6: Adequate but lacks depth or recency.
+7: Strong referencing.
+8–10: Only if highly relevant, recent, and correctly linked to the gap.
+
+#############################################################
+# STRICT HIGH-SCORE JUSTIFICATION RULE
+#############################################################
+If you give any score above 7, you MUST justify it strongly in the comments.
+If you cannot provide a strong justification, reduce the score to 6 or below.
+
+#############################################################
+# CONTEXT TO EVALUATE
+#############################################################
 
 STUDENT GAP:
 {gap}
 
-REFERENCES:
+REFERENCES PROVIDED:
 {refs}
 
-TOP-10 ABSTRACTS:
+TOP-10 MOST RELEVANT ABSTRACTS:
 {combined_abstracts}
 """
 
@@ -227,6 +267,7 @@ TOP-10 ABSTRACTS:
                 "significance_comment": "",
                 "citation_comment": ""
             }
+
 
 #############################################################
 # INPUT BOXES (FIXED)
