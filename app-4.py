@@ -3,9 +3,10 @@
 # Drop-in updates: (A) compute objective citation metrics, (B) force GPT to
 # ground scores in Top-10 evidence, (C) combine GPT score + metric-based score.
 #############################################################
-
+import re
 import difflib
 from datetime import datetime
+
 
 CURRENT_YEAR = datetime.now().year  # will use runtime year
 
