@@ -1,165 +1,154 @@
 #############################################################
-# AI-BIM / Digital Construction Research Gap Checker
-# FULL VERSION – FIXED UI – TIGER BOXES WORKING – APA FIXED
+# ENHANCEMENTS FOR MORE RELIABLE SCORING (NOVELTY / SIGNIFICANCE / CITATION)
+# Drop-in updates: (A) compute objective citation metrics, (B) force GPT to
+# ground scores in Top-10 evidence, (C) combine GPT score + metric-based score.
 #############################################################
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import json
-import re
-from io import BytesIO
-from openai import OpenAI
+import difflib
+from datetime import datetime
+
+CURRENT_YEAR = datetime.now().year  # will use runtime year
 
 #############################################################
-# PAGE CONFIG – QUB BRANDING
+# 1) STRONGER REFERENCE PARSING + METRICS (RECENCY, DOI COVERAGE, TOP-10 OVERLAP)
 #############################################################
-st.set_page_config(page_title="AI-BIM Research Gap Checker", layout="wide")
+DOI_REGEX = re.compile(r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)", re.I)
+YEAR_REGEX = re.compile(r"\b(19\d{2}|20\d{2})\b")
 
-QUB_RED = "#CC0033"
-QUB_DARK = "#002147"
-QUB_LIGHT = "#F5F5F5"
+def extract_dois(text: str):
+    return list({d.lower().rstrip(".") for d in DOI_REGEX.findall(text or "")})
 
-#############################################################
-# CSS FIXED
-#############################################################
-st.markdown(f"""
-<style>
-body {{
-    background-color: {QUB_LIGHT};
-    font-family: Arial, sans-serif;
-}}
-.header {{
-    background-color: {QUB_DARK};
-    padding: 25px 40px;
-    border-radius: 10px;
-    color: white;
-}}
-</style>
-""", unsafe_allow_html=True)
+def extract_years(text: str):
+    years = [int(y) for y in YEAR_REGEX.findall(text or "")]
+    # remove obvious false positives outside plausible academic window
+    years = [y for y in years if 1950 <= y <= CURRENT_YEAR]
+    return years
 
-#############################################################
-# HEADER
-#############################################################
-st.markdown(f"""
-<div class="header">
-<h2>🎓 AI-BIM / Digital Construction Research Gap Checker</h2>
-<p>Evaluate research gaps using Top-10 literature, abstracts, Scopus metadata, and GPT reviewer analysis.</p>
-</div>
-""", unsafe_allow_html=True)
+def normalize_title(t: str):
+    t = (t or "").lower()
+    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"[^a-z0-9\s]", "", t)
+    return t
 
-#############################################################
-# SIDEBAR
-#############################################################
-st.sidebar.header("Upload Required Files")
+def fuzzy_title_match(user_titles_norm, cand_norm, cutoff=0.86):
+    # best match ratio
+    best = 0.0
+    for ut in user_titles_norm:
+        r = difflib.SequenceMatcher(None, ut, cand_norm).ratio()
+        if r > best:
+            best = r
+    return best >= cutoff, best
 
-PARQUET = st.sidebar.file_uploader("Upload bert_documents_enriched.parquet", type=["parquet"])
-EMB_PATH = st.sidebar.file_uploader("Upload bert_embeddings.npy", type=["npy"])
-SCOPUS = st.sidebar.file_uploader("Upload Scopus.csv", type=["csv"])
-api_key = st.sidebar.text_input("Enter OpenAI API Key", type="password")
+def citation_metrics(user_refs_text: str, top10_df: pd.DataFrame):
+    user_dois = set(extract_dois(user_refs_text))
+    user_years = extract_years(user_refs_text)
 
-style_choice = st.sidebar.selectbox(
-    "Journal Style for Review",
-    ["Automation in Construction", "ECAM", "ITcon"]
-)
+    # recency
+    recent_3y = sum(1 for y in user_years if y >= CURRENT_YEAR - 2)  # last 3 yrs inclusive
+    recent_5y = sum(1 for y in user_years if y >= CURRENT_YEAR - 4)
 
-if not (PARQUET and EMB_PATH and SCOPUS and api_key):
-    st.warning("Please upload all 3 files and enter your API key.")
-    st.stop()
+    # top10 overlap via DOI
+    top10_dois = set([str(d).lower().strip() for d in top10_df.get("DOI", []).fillna("").tolist() if str(d).strip()])
+    overlap_doi = len(user_dois.intersection(top10_dois))
 
-client = OpenAI(api_key=api_key)
+    # top10 overlap via title fuzzy match (backup)
+    user_titles_norm = [normalize_title(x) for x in re.split(r"\n|•|\r", user_refs_text or "") if len(x.strip()) > 20]
+    top10_titles = top10_df.get("Title", pd.Series([])).fillna("").tolist()
+    top10_titles_norm = [normalize_title(t) for t in top10_titles]
 
-#############################################################
-# LOADERS
-#############################################################
-@st.cache_resource
-def load_docs(parquet_file, emb_file):
-    df = pd.read_parquet(parquet_file).fillna("")
-    emb = np.load(emb_file)
-    return df, emb
+    overlap_title = 0
+    best_title_matches = []
+    for i, cand_norm in enumerate(top10_titles_norm):
+        ok, score = fuzzy_title_match(user_titles_norm, cand_norm)
+        if ok:
+            overlap_title += 1
+            best_title_matches.append((i+1, top10_titles[i], round(score, 3)))
 
-@st.cache_resource
-def load_scopus(csv_file):
-    raw = csv_file.read()
-    encodings = ["utf-8", "iso-8859-1", "utf-16"]
-    for enc in encodings:
-        try:
-            df = pd.read_csv(BytesIO(raw), encoding=enc, low_memory=False)
-            df.columns = [c.strip() for c in df.columns]
-            return df
-        except:
-            pass
-    df = pd.read_csv(BytesIO(raw), low_memory=False)
-    df.columns = [c.strip() for c in df.columns]
-    return df
+    metrics = {
+        "n_refs_lines": len([x for x in (user_refs_text or "").splitlines() if x.strip()]),
+        "n_dois_user": len(user_dois),
+        "n_years_found": len(user_years),
+        "recent_3y_count": recent_3y,
+        "recent_5y_count": recent_5y,
+        "top10_overlap_doi_count": overlap_doi,
+        "top10_overlap_title_count": overlap_title,
+        "top10_title_matches": best_title_matches[:10],  # keep short
+        "top10_doi_list": sorted(list(top10_dois))[:10], # debug aid (short)
+    }
+    return metrics
 
-df_docs, embeddings = load_docs(PARQUET, EMB_PATH)
-df_scopus = load_scopus(SCOPUS)
 
 #############################################################
-# ALIGN ROW COUNTS
+# 2) METRIC-BASED CITATION SCORE (0–10) + NOVELTY/SIGNIFICANCE HEURISTICS
 #############################################################
-if len(df_docs) != embeddings.shape[0]:
-    min_len = min(len(df_docs), embeddings.shape[0])
-    st.warning(f"Mismatch detected. Using first {min_len} rows.")
-    df_docs = df_docs.iloc[:min_len].reset_index(drop=True)
-    embeddings = embeddings[:min_len, :]
+def clamp(x, lo=0, hi=10):
+    return max(lo, min(hi, x))
+
+def score_citations_from_metrics(m):
+    """
+    Conservative scoring:
+    - Recency matters (last 3 years)
+    - Direct relevance: overlap with top-10 (DOI/title)
+    - DOI coverage (traceability)
+    """
+    base = 2.0
+
+    # volume proxy (avoid rewarding spam)
+    if m["n_refs_lines"] >= 8: base += 1.0
+    if m["n_refs_lines"] >= 15: base += 0.5
+
+    # DOI coverage
+    if m["n_dois_user"] >= 3: base += 1.0
+    if m["n_dois_user"] >= 8: base += 0.5
+
+    # Recency
+    if m["recent_3y_count"] >= 3: base += 1.5
+    if m["recent_3y_count"] >= 6: base += 0.5
+    if m["recent_5y_count"] >= 6: base += 0.5
+
+    # Overlap with top10
+    # DOI overlap is strongest, title overlap is weaker
+    if m["top10_overlap_doi_count"] >= 1: base += 1.5
+    if m["top10_overlap_doi_count"] >= 2: base += 0.5
+    if m["top10_overlap_title_count"] >= 2: base += 0.5
+
+    # Cap hard: a perfect 10 is extremely rare
+    return clamp(round(base, 1), 0, 9)
+
+
+def novelty_significance_heuristics(gap_text: str, top10_df: pd.DataFrame):
+    """
+    Light-touch heuristics to reduce inflated GPT scoring:
+    - If gap reuses common phrases heavily, reduce novelty ceiling
+    - If gap lacks explicit 'missing mechanism' + 'measurable contribution', reduce significance ceiling
+    """
+    gap_l = (gap_text or "").lower()
+
+    common_claims = [
+        "interoperability", "lifecycle", "sustainability", "digital twin",
+        "framework", "decision-making", "circular", "explainable", "predictive"
+    ]
+    hits = sum(1 for w in common_claims if w in gap_l)
+
+    # crude specificity signals
+    has_mechanism = any(k in gap_l for k in ["operationalis", "implement", "workflow", "governance", "validation", "traceab", "audit"])
+    has_eval = any(k in gap_l for k in ["evaluate", "experiment", "case study", "benchmark", "metrics", "dataset", "protocol"])
+
+    novelty_cap = 10
+    significance_cap = 10
+
+    if hits >= 6 and not has_mechanism:
+        novelty_cap = 6
+    if not has_eval:
+        significance_cap = 7 if has_mechanism else 6
+
+    return novelty_cap, significance_cap
+
 
 #############################################################
-# EMBEDDING CALL
+# 3) UPDATE GPT PROMPT: EVIDENCE-BASED SCORING + REQUIRED CITED PAPER NUMBERS
 #############################################################
-def embed_query(text):
-    resp = client.embeddings.create(
-        model="text-embedding-3-large",
-        input=text
-    )
-    return np.array(resp.data[0].embedding)
-
-#############################################################
-# APA BUILDER
-#############################################################
-def build_apa(row):
-    authors = row.get("Authors", "")
-    year = str(row.get("Year", "n.d."))
-    title = row.get("Title", "")
-    journal = row.get("Source title", "")
-    volume = row.get("Volume", "")
-    issue = row.get("Issue", "")
-    p1 = str(row.get("Page start", ""))
-    p2 = str(row.get("Page end", ""))
-    art = str(row.get("Art. No.", ""))
-    doi = str(row.get("DOI", ""))
-
-    pages = ""
-    if p1 and p2 and p1 != "nan" and p2 != "nan":
-        pages = f"{p1}-{p2}"
-    elif art and art != "nan":
-        pages = f"Article {art}"
-
-    apa = f"{authors} ({year}). {title}. {journal}"
-    if volume and volume != "nan":
-        apa += f", {volume}"
-    if issue and issue != "nan":
-        apa += f"({issue})"
-    if pages:
-        apa += f", {pages}"
-    if doi and doi != "nan":
-        apa += f". https://doi.org/{doi}"
-
-    return apa
-
-#############################################################
-# SIMILARITY
-#############################################################
-def vector_similarity(qv, mat):
-    qn = np.linalg.norm(qv)
-    dn = np.linalg.norm(mat, axis=1)
-    return mat @ qv / (dn * qn + 1e-9)
-
-#############################################################
-# GPT REVIEW CLEANED (STRICT + REALISTIC SCORING)
-#############################################################
-def gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice):
+def gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice, cite_metrics):
 
     combined_abstracts = "\n\n".join(
         [f"PAPER {i+1}:\nTITLE: {t}\nABSTRACT:\n{a}"
@@ -167,68 +156,45 @@ def gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice):
     )
 
     prompt = f"""
-You are a senior academic reviewer for Automation in Construction, ECAM, and ITcon.
-You MUST evaluate the research gap with STRICT standards and realistic scoring.
+You are a senior academic reviewer for {style_choice}.
+Your job is to SCORE the gap with high reliability.
 
-Do NOT rewrite the gap.
-Only evaluate it.
+CRITICAL RULES:
+1) Ground your scoring in evidence from the TOP-10 abstracts. If you claim overlap, cite paper numbers.
+2) Do NOT rewrite the gap. Only evaluate.
+3) Use the full scale conservatively. Scores 8–10 are extremely rare.
+4) Novelty and citation scores MUST explicitly reference TOP-10 Paper numbers to justify the score.
+5) If evidence is insufficient, lower the score.
 
-Return STRICT JSON ONLY:
+Return STRICT JSON ONLY (no markdown, no extra text):
 {{
-"novelty_score": 0,
-"significance_score": 0,
-"clarity_score": 0,
-"citation_score": 0,
-"good_points": [],
-"improvements": [],
-"novelty_comment": "",
-"significance_comment": "",
-"citation_comment": ""
+  "novelty_score": 0,
+  "significance_score": 0,
+  "clarity_score": 0,
+  "citation_score": 0,
+  "evidence": {{
+    "overlap_papers": [1,2],
+    "supporting_papers": [5,10],
+    "missing_recent_citations": true
+  }},
+  "good_points": ["..."],
+  "improvements": ["..."],
+  "novelty_comment": "Must cite Paper numbers and why overlap exists or not.",
+  "significance_comment": "State why it is incremental vs transformative, with rationale.",
+  "citation_comment": "Refer to citation metrics and Paper numbers to recommend additions."
 }}
 
-#############################################################
-# STRICT SCORING RUBRIC (USE FULL SCALE)
-#############################################################
+SCORING RUBRIC:
+- Novelty (0–10): assess distinctiveness vs TOP-10.
+- Significance (0–10): assess value if solved; avoid inflated scores for well-known issues.
+- Clarity (0–10): structure, precision, and lack of vagueness.
+- Citation quality (0–10): recency + relevance + linkage to TOP-10.
 
-IMPORTANT GENERAL RULE:
-Scores 8–10 must be EXTREMELY rare and only given for exceptional, publication-ready work.
-Typical student gaps should fall between 3–6.
+REFERENCE METRICS (objective signals):
+{json.dumps(cite_metrics, ensure_ascii=False)}
 
-NOVELTY (0–10):
-0–2: Generic, repeated widely in literature, not original.
-3–4: Minor originality but overlaps strongly with existing studies.
-5–6: Moderate novelty with some unique angle.
-7: Strong novelty, justified.
-8–10: Only if highly original and clearly distinct from existing top-10 abstracts.
-
-SIGNIFICANCE (0–10):
-0–3: Low academic or practical value.
-4–5: Moderate importance.
-6: Good importance.
-7: High significance, but still requires strong justification.
-8–10: Only if transformative for industry or research.
-
-CLARITY (0–10):
-0–3: Unclear or poorly structured.
-4–6: Acceptable but with issues.
-7: Clear and well expressed.
-8–10: Only if exceptionally clear, concise, and logically structured.
-
-CITATION QUALITY (0–10):
-0–3: Weak or insufficient references.
-4–6: Adequate but lacks depth or recency.
-7: Strong referencing.
-8–10: Only if highly relevant, recent, and correctly linked to the gap.
-
-#############################################################
-# STRICT HIGH-SCORE JUSTIFICATION RULE
-#############################################################
-If you give any score above 7, you MUST justify it strongly in the comments.
-If you cannot provide a strong justification, reduce the score to 6 or below.
-
-#############################################################
-# CONTEXT TO EVALUATE
-#############################################################
+STUDENT TITLE:
+{title}
 
 STUDENT GAP:
 {gap}
@@ -243,115 +209,75 @@ TOP-10 MOST RELEVANT ABSTRACTS:
     response = client.chat.completions.create(
         model="gpt-4.1",
         temperature=0,
-        max_tokens=6000,
+        max_tokens=2500,
         messages=[{"role": "user", "content": prompt}]
     )
 
     raw = response.choices[0].message.content
 
     try:
-        return json.loads(raw)
+        out = json.loads(raw)
     except:
         cleaned = raw[raw.find("{"): raw.rfind("}")+1]
-        try:
-            return json.loads(cleaned)
-        except:
-            return {
-                "novelty_score": 0,
-                "significance_score": 0,
-                "clarity_score": 0,
-                "citation_score": 0,
-                "good_points": [],
-                "improvements": [],
-                "novelty_comment": "",
-                "significance_comment": "",
-                "citation_comment": ""
-            }
+        out = json.loads(cleaned) if cleaned else {}
+
+    # harden output defaults
+    out = out if isinstance(out, dict) else {}
+    for k in ["novelty_score","significance_score","clarity_score","citation_score"]:
+        out.setdefault(k, 0)
+
+    out.setdefault("evidence", {"overlap_papers": [], "supporting_papers": [], "missing_recent_citations": False})
+    out.setdefault("good_points", [])
+    out.setdefault("improvements", [])
+    out.setdefault("novelty_comment", "")
+    out.setdefault("significance_comment", "")
+    out.setdefault("citation_comment", "")
+
+    return out
 
 
 #############################################################
-# INPUT BOXES (FIXED)
+# 4) COMBINE GPT + METRICS INTO FINAL SCORES (REDUCE BIAS / INFLATION)
 #############################################################
-st.markdown("### 📌 Dissertation Title")
-title = st.text_input("", placeholder="Enter dissertation title")
+def combine_scores(gpt_out, cite_m, gap_text, top10_df):
+    # objective citation score
+    citation_obj = score_citations_from_metrics(cite_m)
 
-st.markdown("### 📌 Research Gap")
-gap = st.text_area("", height=200, placeholder="Paste the research gap here")
+    # caps to reduce inflated novelty/significance when vague
+    novelty_cap, significance_cap = novelty_significance_heuristics(gap_text, top10_df)
 
-st.markdown("### 📌 APA References")
-refs = st.text_area("", height=200, placeholder="Paste APA references here")
+    novelty = min(float(gpt_out.get("novelty_score", 0)), novelty_cap)
+    significance = min(float(gpt_out.get("significance_score", 0)), significance_cap)
+    clarity = clamp(float(gpt_out.get("clarity_score", 0)), 0, 10)
+
+    # blended citation score: 60% objective, 40% GPT
+    citation_gpt = float(gpt_out.get("citation_score", 0))
+    citation = clamp(round(0.6 * citation_obj + 0.4 * citation_gpt, 1), 0, 10)
+
+    gpt_out["novelty_score_final"] = clamp(round(novelty, 1), 0, 10)
+    gpt_out["significance_score_final"] = clamp(round(significance, 1), 0, 10)
+    gpt_out["clarity_score_final"] = clamp(round(clarity, 1), 0, 10)
+    gpt_out["citation_score_final"] = citation
+    gpt_out["citation_score_objective"] = citation_obj
+    gpt_out["caps"] = {"novelty_cap": novelty_cap, "significance_cap": significance_cap}
+    return gpt_out
+
 
 #############################################################
-# RUN BUTTON
+# 5) IN YOUR "Run Evaluation" BLOCK, ADD METRICS + USE FINAL SCORES
 #############################################################
-if st.button("Run Evaluation"):
-    with st.spinner("Processing..."):
+# After you create top10, do:
+# cite_m = citation_metrics(refs, top10)
+# gpt_out = gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice, cite_m)
+# gpt_out = combine_scores(gpt_out, cite_m, gap, top10)
 
-        q_vec = embed_query(f"{title} {gap} {refs}")
-        sims = vector_similarity(q_vec, embeddings)
-        df_docs["similarity"] = sims
+# Then in metric cards use *_final:
+# col1 ... gpt_out['novelty_score_final']
+# col2 ... gpt_out['significance_score_final']
+# col3 ... gpt_out['clarity_score_final']
+# col4 ... gpt_out['citation_score_final']
 
-        top10 = df_docs.sort_values("similarity", ascending=False).head(10)
-        top10_titles = top10["Title"].tolist()
-        top10_abstracts = top10["Abstract"].fillna("").tolist()
-
-        apa_list = []
-        for t in top10_titles:
-            row = df_scopus[df_scopus["Title"] == t]
-            apa_list.append(build_apa(row.iloc[0]) if len(row) else f"{t} (metadata not found)")
-
-        gpt_out = gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice)
-
-        #############################################################
-        # METRIC CARDS (TIGER BOXES FIXED)
-        #############################################################
-        col1, col2, col3, col4 = st.columns(4)
-
-        card_html = """
-        <div style="background-color:white; border-left:6px solid #CC0033; 
-                    padding:16px; border-radius:12px; border:1px solid #ddd;
-                    text-align:center; margin-bottom:10px;">
-            <div style="font-size:16px; font-weight:600; color:#002147;">{title}</div>
-            <div style="font-size:28px; font-weight:700; color:#CC0033;">{value}</div>
-        </div>
-        """
-
-        col1.markdown(card_html.format(title="Novelty", value=f"{gpt_out['novelty_score']}/10"), unsafe_allow_html=True)
-        col2.markdown(card_html.format(title="Significance", value=f"{gpt_out['significance_score']}/10"), unsafe_allow_html=True)
-        col3.markdown(card_html.format(title="Clarity", value=f"{gpt_out['clarity_score']}/10"), unsafe_allow_html=True)
-        col4.markdown(card_html.format(title="Citation Quality", value=f"{gpt_out['citation_score']}/10"), unsafe_allow_html=True)
-
-        #############################################################
-        # RESULTS TABS
-        #############################################################
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📚 Top 10 Literature",
-            "⭐ Good Points",
-            "🚧 Improvements",
-            "🔎 Reviewer Comments",
-            "📑 APA References"
-        ])
-
-        with tab1:
-            st.write(top10[["Title","Year","DOI","similarity"]])
-
-        with tab2:
-            for p in gpt_out["good_points"]:
-                st.write("•", p)
-
-        with tab3:
-            for p in gpt_out["improvements"]:
-                st.write("•", p)
-
-        with tab4:
-            st.write("### Novelty Comment")
-            st.write(gpt_out["novelty_comment"])
-            st.write("### Significance Comment")
-            st.write(gpt_out["significance_comment"])
-            st.write("### Citation Comment")
-            st.write(gpt_out["citation_comment"])
-
-        with tab5:
-            st.subheader("APA References")
-            for ref in apa_list:
-                st.markdown(f"<p>• {ref}</p>", unsafe_allow_html=True)
+# And optionally show an "Evidence" panel:
+# st.json(gpt_out.get("evidence", {}))
+# st.write("Objective citation score:", gpt_out.get("citation_score_objective"))
+# st.write("Applied caps:", gpt_out.get("caps"))
