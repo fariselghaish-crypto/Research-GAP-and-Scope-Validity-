@@ -1,15 +1,16 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# FULL WORKING VERSION + REVISION-AWARE SCORING
+# FULL WORKING VERSION + REVISION-AWARE SCORING (+2.5 uplift at >=70% coverage)
 #
-# Key features:
-# - Preserves your original working structure and UI
-# - Fixes import order issues (re before DOI_REGEX)
-# - Upgrades GPT review "guts" for stricter, evidence-based scoring
-# - Adds objective citation metrics (recency, DOI count, overlap with Top-10)
-# - Adds REVISION-AWARE uplift: if second attempt addresses previous feedback,
-#   novelty/clarity/significance can increase (bounded, auditable)
-# - NO pd.DataFrame type hints (avoids Streamlit NameError)
+# Preserves your original UI/flow and fixes the errors you hit.
+# Main additions:
+# - objective citation metrics blended into citation score
+# - strict GPT reviewer prompt
+# - revision-aware uplift:
+#     if revised gap covers >=70% of extracted improvement keywords:
+#         Novelty +2.5, Significance +2.5, Clarity +1.0 (capped at 10)
+#
+# NOTE: No pd.DataFrame type hints anywhere (avoids NameError in Streamlit).
 #############################################################
 
 import streamlit as st
@@ -75,10 +76,7 @@ style_choice = st.sidebar.selectbox(
 )
 
 show_debug = st.sidebar.checkbox("Show scoring diagnostics", value=False)
-revision_mode = st.sidebar.checkbox(
-    "Revision-aware scoring (rewards addressing feedback)",
-    value=True
-)
+revision_mode = st.sidebar.checkbox("Revision-aware scoring (rewards addressing feedback)", value=True)
 
 if not (PARQUET and EMB_PATH and SCOPUS and api_key):
     st.warning("Please upload all 3 files and enter your API key.")
@@ -174,7 +172,7 @@ def vector_similarity(qv, mat):
     return mat @ qv / (dn * qn + 1e-9)
 
 #############################################################
-# RELIABLE CITATION METRICS (OBJECTIVE SIGNALS)
+# CITATION METRICS (OBJECTIVE SIGNALS)
 #############################################################
 CURRENT_YEAR = datetime.now().year
 DOI_REGEX = re.compile(r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)", re.I)
@@ -212,7 +210,6 @@ def citation_metrics(user_refs_text, top10_df):
     recent_3y = sum(1 for y in user_years if y >= CURRENT_YEAR - 2)
     recent_5y = sum(1 for y in user_years if y >= CURRENT_YEAR - 4)
 
-    # Top-10 DOI set
     top10_dois = set()
     if "DOI" in top10_df.columns:
         top10_dois = set(
@@ -223,7 +220,6 @@ def citation_metrics(user_refs_text, top10_df):
 
     overlap_doi = len(user_dois.intersection(top10_dois))
 
-    # Title fuzzy overlap as fallback
     user_titles_norm = [
         normalize_title(x)
         for x in re.split(r"\n|•|\r", user_refs_text or "")
@@ -247,7 +243,6 @@ def citation_metrics(user_refs_text, top10_df):
     }
 
 def citation_score_objective(m):
-    # Conservative ceiling: objective max 9
     score = 2.0
 
     if m["n_refs_lines"] >= 8:
@@ -276,6 +271,9 @@ def citation_score_objective(m):
 
     return min(round(score, 1), 9.0)
 
+#############################################################
+# CAPS (KEEP SCORING REALISTIC)
+#############################################################
 def caps_for_novelty_significance(gap_text):
     gap = (gap_text or "").lower()
     generic_terms = [
@@ -299,6 +297,7 @@ def caps_for_novelty_significance(gap_text):
 
 #############################################################
 # REVISION-AWARE SCORING (REWARDS ADDRESSING FEEDBACK)
+# RULE: >=70% improvement keywords present in revised gap -> +2.5 novelty/significance
 #############################################################
 STOPWORDS = set("""
 a an the and or but if then else when while to of in on for with without by from as is are was were be been being
@@ -335,31 +334,49 @@ def revision_coverage(new_gap_text, prev_keywords):
     return coverage, found, missing
 
 def apply_revision_uplift(scores_dict, coverage):
-    uplift = 0.0
-    if coverage >= 0.60:
-        uplift = 1.0
+    """
+    >= 0.70 coverage -> strong reward:
+        Novelty +2.5
+        Significance +2.5
+        Clarity +1.0
+    """
+    novelty_uplift = 0.0
+    significance_uplift = 0.0
+    clarity_uplift = 0.0
+
+    if coverage >= 0.70:
+        novelty_uplift = 2.5
+        significance_uplift = 2.5
+        clarity_uplift = 1.0
     elif coverage >= 0.40:
-        uplift = 0.7
+        novelty_uplift = 1.2
+        significance_uplift = 1.0
+        clarity_uplift = 0.6
     elif coverage >= 0.25:
-        uplift = 0.4
+        novelty_uplift = 0.6
+        significance_uplift = 0.4
+        clarity_uplift = 0.4
 
-    # conservative application
+    # apply safely with caps
     try:
-        scores_dict["novelty_score"] = min(10, round(float(scores_dict.get("novelty_score", 0)) + uplift, 1))
+        scores_dict["novelty_score"] = min(10, round(float(scores_dict.get("novelty_score", 0)) + novelty_uplift, 1))
     except:
-        scores_dict["novelty_score"] = scores_dict.get("novelty_score", 0)
-
+        pass
     try:
-        scores_dict["clarity_score"] = min(10, round(float(scores_dict.get("clarity_score", 0)) + uplift, 1))
+        scores_dict["significance_score"] = min(10, round(float(scores_dict.get("significance_score", 0)) + significance_uplift, 1))
     except:
-        scores_dict["clarity_score"] = scores_dict.get("clarity_score", 0)
-
+        pass
     try:
-        scores_dict["significance_score"] = min(10, round(float(scores_dict.get("significance_score", 0)) + uplift * 0.3, 1))
+        scores_dict["clarity_score"] = min(10, round(float(scores_dict.get("clarity_score", 0)) + clarity_uplift, 1))
     except:
-        scores_dict["significance_score"] = scores_dict.get("significance_score", 0)
+        pass
 
-    return uplift
+    return {
+        "coverage": round(coverage, 2),
+        "novelty_uplift": novelty_uplift,
+        "significance_uplift": significance_uplift,
+        "clarity_uplift": clarity_uplift
+    }
 
 #############################################################
 # GPT REVIEW (UPDATED "GUTS": evidence-based + metrics-aware)
@@ -374,8 +391,6 @@ def gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice, ci
     prompt = f"""
 You are a senior academic reviewer writing in the style of {style_choice}.
 Evaluate the STUDENT GAP only. Do not rewrite it.
-
-You must score with strict standards and realistic calibration.
 
 Return STRICT JSON ONLY:
 {{
@@ -395,23 +410,18 @@ Return STRICT JSON ONLY:
   }}
 }}
 
-SCORING RULES (USE FULL SCALE CONSERVATIVELY):
-- 8–10 must be extremely rare and only for publication-ready work.
-- Typical student gaps are 3–6.
+SCORING RULES:
+- 8–10 extremely rare and only for publication-ready work.
+- Typical student gaps: 3–6.
 
-NOVELTY (0–10):
-- Judge against TOP-10 abstracts. If overlap exists, list paper numbers in evidence_papers.overlap.
-SIGNIFICANCE (0–10):
-- High only if the gap, if solved, would substantially shift practice or research.
-CLARITY (0–10):
-- Based on focus, precision, and logical structure.
-CITATION QUALITY (0–10):
-- Consider recency and relevance. Use the metrics provided. If weak, keep score <= 6.
+NOVELTY: judge against TOP-10 abstracts, cite paper numbers in evidence_papers.overlap.
+SIGNIFICANCE: high only if solving the gap materially changes research/practice.
+CLARITY: focus, precision, logical structure.
+CITATION QUALITY: use the metrics provided; keep <=6 if weak.
 
-HIGH-SCORE RULE:
-If any score > 7, you must justify it strongly in the corresponding comment. Otherwise reduce to 7 or below.
+If any score > 7, justify it strongly; otherwise reduce to 7 or below.
 
-CITATION METRICS (objective signals):
+CITATION METRICS:
 {json.dumps(cite_m, ensure_ascii=False)}
 
 STUDENT TITLE:
@@ -420,10 +430,10 @@ STUDENT TITLE:
 STUDENT GAP:
 {gap}
 
-REFERENCES PROVIDED:
+REFERENCES:
 {refs}
 
-TOP-10 MOST RELEVANT ABSTRACTS:
+TOP-10 ABSTRACTS:
 {combined_abstracts}
 """
 
@@ -457,7 +467,7 @@ TOP-10 MOST RELEVANT ABSTRACTS:
             }
 
 #############################################################
-# INPUT BOXES (FIXED)
+# INPUT BOXES
 #############################################################
 st.markdown("### 📌 Dissertation Title")
 title = st.text_input("", placeholder="Enter dissertation title")
@@ -487,21 +497,20 @@ if st.button("Run Evaluation"):
             row = df_scopus[df_scopus["Title"] == t]
             apa_list.append(build_apa(row.iloc[0]) if len(row) else f"{t} (metadata not found)")
 
-        # objective citation metrics
+        # Citation metrics + blended citation score
         cite_m = citation_metrics(refs, top10)
         cite_obj = citation_score_objective(cite_m)
 
-        # GPT review (metrics-aware)
+        # GPT review
         gpt_out = gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice, cite_m)
 
-        # blend citation score: 60% objective + 40% GPT
         try:
             cite_gpt = float(gpt_out.get("citation_score", 0))
         except:
             cite_gpt = 0.0
         gpt_out["citation_score"] = round(0.6 * cite_obj + 0.4 * cite_gpt, 1)
 
-        # apply conservative caps for novelty/significance when gap is broad
+        # Apply conservative caps
         nov_cap, sig_cap = caps_for_novelty_significance(gap)
         try:
             gpt_out["novelty_score"] = min(float(gpt_out.get("novelty_score", 0)), nov_cap)
@@ -512,15 +521,8 @@ if st.button("Run Evaluation"):
         except:
             gpt_out["significance_score"] = 0
 
-        # REVISION-AWARE uplift (rewards addressing previous feedback)
-        revision_info = {
-            "enabled": False,
-            "coverage": 0.0,
-            "keywords": [],
-            "found": [],
-            "missing": [],
-            "uplift": 0.0
-        }
+        # Revision-aware uplift based on previous improvements
+        revision_info = {"enabled": False}
 
         if revision_mode and "prev_run" in st.session_state:
             prev = st.session_state["prev_run"]
@@ -528,21 +530,18 @@ if st.button("Run Evaluation"):
             prev_keywords = extract_improvement_keywords(prev_improvements, top_k=18)
 
             cov, found, missing = revision_coverage(gap, prev_keywords)
-
-            uplift = 0.0
-            if len(prev_keywords) >= 6:
-                uplift = apply_revision_uplift(gpt_out, cov)
+            uplift_info = apply_revision_uplift(gpt_out, cov)
 
             revision_info = {
                 "enabled": True,
-                "coverage": round(cov, 2),
+                "coverage": uplift_info["coverage"],
                 "keywords": prev_keywords,
                 "found": found,
                 "missing": missing,
-                "uplift": uplift
+                "uplifts": uplift_info
             }
 
-        # Store current run to enable next-attempt improvement reward
+        # Store current run
         st.session_state["prev_run"] = {
             "title": title,
             "gap": gap,
@@ -559,7 +558,7 @@ if st.button("Run Evaluation"):
         }
 
         #############################################################
-        # METRIC CARDS (TIGER BOXES FIXED)
+        # METRIC CARDS
         #############################################################
         col1, col2, col3, col4 = st.columns(4)
 
@@ -612,16 +611,17 @@ if st.button("Run Evaluation"):
 
             if revision_mode and revision_info.get("enabled"):
                 st.write("### Revision-aware scoring")
-                st.write(f"Coverage of previous improvement keywords: {revision_info['coverage']}")
-                st.write(f"Applied uplift: +{revision_info['uplift']} to Novelty/Clarity (Significance scaled).")
+                st.write(f"Coverage of previous improvement keywords: {revision_info.get('coverage', 0)}")
+                st.write("Applied uplifts:")
+                st.json(revision_info.get("uplifts", {}))
 
                 if show_debug:
                     st.write("Keywords extracted from previous improvements:")
-                    st.write(revision_info["keywords"])
+                    st.write(revision_info.get("keywords", []))
                     st.write("Found in revised gap:")
-                    st.write(revision_info["found"])
+                    st.write(revision_info.get("found", []))
                     st.write("Still missing:")
-                    st.write(revision_info["missing"])
+                    st.write(revision_info.get("missing", []))
 
             if show_debug:
                 st.write("### Evidence (Paper numbers)")
