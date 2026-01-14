@@ -40,7 +40,7 @@ def fuzzy_title_match(user_titles_norm, cand_norm, cutoff=0.86):
             best = r
     return best >= cutoff, best
 
-def citation_metrics(user_refs_text: str, top10_df: pd.DataFrame):
+def citation_metrics(user_refs_text: str, top10_df):
     user_dois = set(extract_dois(user_refs_text))
     user_years = extract_years(user_refs_text)
 
