@@ -1,22 +1,20 @@
 #############################################################
 # AI-BIM / Digital Construction Research Gap Checker
-# FULL WORKING VERSION + STRICT SCORING + REVISION REASSESSMENT (B + D)
+# FULL WORKING VERSION + FIXED NOVELTY/SIGNIFICANCE SCORING
 #
-# B (Academic purity): baseline scoring remains strict and conservative.
-# D (Deterministic revision reward): if >=70% of improvement keywords are addressed,
-# the system reclassifies the submission as "major revision", lifts caps (still bounded),
-# then applies uplift. This mirrors journal "major revisions addressed" behaviour.
+# What was fixed:
+# 1) GPT output is forced into JSON mode when possible (response_format=json_object).
+# 2) Prompt is shortened (abstracts truncated) to prevent JSON truncation.
+# 3) GPT no longer "guesses" novelty/significance as final numbers.
+#    Instead, GPT returns STRUCTURED SIGNALS + overlap/missing evidence,
+#    then the app computes novelty/significance deterministically.
+# 4) Caps are softened: instead of hard ceilings, we apply small penalties when generic.
+# 5) Debug now shows:
+#    - raw GPT JSON (if requested)
+#    - signals used to compute scores
+#    - deterministic scoring breakdown
 #
-# Key features:
-# - Your original UI/flow preserved
-# - Fixes import-order errors (re before DOI_REGEX)
-# - Objective citation metrics blended into citation score
-# - Strict GPT reviewer prompt
-# - Revision-aware coverage tracking using prior "improvements"
-# - Tiered reassessment:
-#     >=70% coverage -> major revision -> caps up to 8 + uplift (+2.5)
-#     40-69%         -> minor revision -> caps up to 7 + moderate uplift
-# - No pd.DataFrame type hints (avoids Streamlit NameError)
+# Your original UI/flow preserved as much as possible.
 #############################################################
 
 import streamlit as st
@@ -41,7 +39,8 @@ QUB_LIGHT = "#F5F5F5"
 #############################################################
 # CSS
 #############################################################
-st.markdown(f"""
+st.markdown(
+    f"""
 <style>
 body {{
     background-color: {QUB_LIGHT};
@@ -54,17 +53,22 @@ body {{
     color: white;
 }}
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 #############################################################
 # HEADER
 #############################################################
-st.markdown(f"""
+st.markdown(
+    f"""
 <div class="header">
 <h2>🎓 AI-BIM / Digital Construction Research Gap Checker</h2>
 <p>Evaluate research gaps using Top-10 literature, abstracts, Scopus metadata, and GPT reviewer analysis.</p>
 </div>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 #############################################################
 # SIDEBAR
@@ -78,7 +82,7 @@ api_key = st.sidebar.text_input("Enter OpenAI API Key", type="password")
 
 style_choice = st.sidebar.selectbox(
     "Journal Style for Review",
-    ["Automation in Construction", "ECAM", "ITcon"]
+    ["Automation in Construction", "ECAM", "ITcon"],
 )
 
 show_debug = st.sidebar.checkbox("Show scoring diagnostics", value=False)
@@ -99,6 +103,7 @@ def load_docs(parquet_file, emb_file):
     emb = np.load(emb_file)
     return df, emb
 
+
 @st.cache_resource
 def load_scopus(csv_file):
     raw = csv_file.read()
@@ -108,11 +113,12 @@ def load_scopus(csv_file):
             df = pd.read_csv(BytesIO(raw), encoding=enc, low_memory=False)
             df.columns = [c.strip() for c in df.columns]
             return df
-        except:
+        except Exception:
             pass
     df = pd.read_csv(BytesIO(raw), low_memory=False)
     df.columns = [c.strip() for c in df.columns]
     return df
+
 
 df_docs, embeddings = load_docs(PARQUET, EMB_PATH)
 df_scopus = load_scopus(SCOPUS)
@@ -130,11 +136,9 @@ if len(df_docs) != embeddings.shape[0]:
 # EMBEDDING CALL
 #############################################################
 def embed_query(text):
-    resp = client.embeddings.create(
-        model="text-embedding-3-large",
-        input=text
-    )
+    resp = client.embeddings.create(model="text-embedding-3-large", input=text)
     return np.array(resp.data[0].embedding)
+
 
 #############################################################
 # APA BUILDER
@@ -169,6 +173,7 @@ def build_apa(row):
 
     return apa
 
+
 #############################################################
 # SIMILARITY
 #############################################################
@@ -177,6 +182,7 @@ def vector_similarity(qv, mat):
     dn = np.linalg.norm(mat, axis=1)
     return mat @ qv / (dn * qn + 1e-9)
 
+
 #############################################################
 # OBJECTIVE CITATION METRICS
 #############################################################
@@ -184,10 +190,12 @@ CURRENT_YEAR = datetime.now().year
 DOI_REGEX = re.compile(r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)", re.I)
 YEAR_REGEX = re.compile(r"\b(19\d{2}|20\d{2})\b")
 
+
 def extract_dois(text):
     if not text:
         return set()
     return set(d.lower().rstrip(".") for d in DOI_REGEX.findall(text))
+
 
 def extract_years(text):
     if not text:
@@ -196,11 +204,13 @@ def extract_years(text):
     years = [y for y in years if 1950 <= y <= CURRENT_YEAR]
     return years
 
+
 def normalize_title(t):
     t = (t or "").lower()
     t = re.sub(r"\s+", " ", t)
     t = re.sub(r"[^a-z0-9\s]", "", t)
     return t.strip()
+
 
 def fuzzy_match(user_titles, candidate, cutoff=0.86):
     best = 0.0
@@ -208,6 +218,7 @@ def fuzzy_match(user_titles, candidate, cutoff=0.86):
         r = difflib.SequenceMatcher(None, ut, candidate).ratio()
         best = max(best, r)
     return best >= cutoff, best
+
 
 def citation_metrics(user_refs_text, top10_df):
     user_dois = extract_dois(user_refs_text)
@@ -243,8 +254,9 @@ def citation_metrics(user_refs_text, top10_df):
         "recent_3y_count": recent_3y,
         "recent_5y_count": recent_5y,
         "top10_overlap_doi_count": overlap_doi,
-        "top10_overlap_title_count": overlap_title
+        "top10_overlap_title_count": overlap_title,
     }
+
 
 def citation_score_objective(m):
     score = 2.0
@@ -275,39 +287,61 @@ def citation_score_objective(m):
 
     return min(round(score, 1), 9.0)
 
+
 #############################################################
-# BASELINE CAPS (B: academic purity)
+# B: SOFTER GENERICITY PENALTY (NOT HARD CAPS)
 #############################################################
-def caps_for_novelty_significance(gap_text):
+GENERIC_TERMS = [
+    "framework",
+    "interoperability",
+    "lifecycle",
+    "sustainability",
+    "digital twin",
+    "circular",
+    "predictive",
+    "explainable",
+    "decision",
+]
+
+
+def genericity_penalty(gap_text):
     gap = (gap_text or "").lower()
-    generic_terms = [
-        "framework", "interoperability", "lifecycle", "sustainability", "digital twin",
-        "circular", "predictive", "explainable", "decision"
-    ]
-    generic_hits = sum(1 for g in generic_terms if g in gap)
+    generic_hits = sum(1 for g in GENERIC_TERMS if g in gap)
 
     has_mechanism = any(k in gap for k in ["workflow", "governance", "validation", "traceab", "audit", "operational"])
     has_eval = any(k in gap for k in ["case study", "experiment", "benchmark", "dataset", "evaluation"])
 
-    novelty_cap = 10
-    significance_cap = 10
+    # small penalties (soft)
+    nov_pen = 0.0
+    sig_pen = 0.0
 
-    # strict caps for broad, generic statements
+    # broad + no mechanism -> likely "generic novelty"
     if generic_hits >= 6 and not has_mechanism:
-        novelty_cap = 6
+        nov_pen += 1.2
 
+    # no evaluation signals -> significance should be reduced a bit
     if not has_eval:
-        significance_cap = 6 if not has_mechanism else 7
+        sig_pen += 1.2 if not has_mechanism else 0.8
 
-    return novelty_cap, significance_cap
+    return {
+        "generic_hits": generic_hits,
+        "has_mechanism": has_mechanism,
+        "has_eval": has_eval,
+        "novelty_penalty": nov_pen,
+        "significance_penalty": sig_pen,
+    }
+
 
 #############################################################
-# REVISION-AWARE KEYWORD COVERAGE
+# REVISION-AWARE KEYWORD COVERAGE (UNCHANGED)
 #############################################################
-STOPWORDS = set("""
+STOPWORDS = set(
+    """
 a an the and or but if then else when while to of in on for with without by from as is are was were be been being
 this that these those it its their there here into across within between also may might can could should would
-""".split())
+""".split()
+)
+
 
 def tokenize_keywords(text, min_len=4):
     text = (text or "").lower()
@@ -315,6 +349,7 @@ def tokenize_keywords(text, min_len=4):
     toks = [t.strip() for t in text.split() if t.strip()]
     toks = [t for t in toks if len(t) >= min_len and t not in STOPWORDS]
     return toks
+
 
 def extract_improvement_keywords(improvements_list, top_k=18):
     joined = " ".join(improvements_list or [])
@@ -324,6 +359,7 @@ def extract_improvement_keywords(improvements_list, top_k=18):
         freq[t] = freq.get(t, 0) + 1
     ranked = sorted(freq.items(), key=lambda x: (-x[1], x[0]))
     return [w for w, c in ranked[:top_k]]
+
 
 def revision_coverage(new_gap_text, prev_keywords):
     gap = (new_gap_text or "").lower()
@@ -338,6 +374,7 @@ def revision_coverage(new_gap_text, prev_keywords):
     coverage = len(found) / total
     return coverage, found, missing
 
+
 def revision_tier(coverage):
     if coverage >= 0.70:
         return "major_revision"
@@ -345,9 +382,7 @@ def revision_tier(coverage):
         return "minor_revision"
     return "no_revision"
 
-#############################################################
-# D: Deterministic revision uplift (applied AFTER reassessment caps)
-#############################################################
+
 def apply_revision_uplift(scores_dict, coverage):
     novelty_uplift = 0.0
     significance_uplift = 0.0
@@ -366,64 +401,95 @@ def apply_revision_uplift(scores_dict, coverage):
         significance_uplift = 0.4
         clarity_uplift = 0.4
 
+    # bounded
     try:
         scores_dict["novelty_score"] = min(10, round(float(scores_dict.get("novelty_score", 0)) + novelty_uplift, 1))
-    except:
+    except Exception:
         pass
     try:
-        scores_dict["significance_score"] = min(10, round(float(scores_dict.get("significance_score", 0)) + significance_uplift, 1))
-    except:
+        scores_dict["significance_score"] = min(
+            10, round(float(scores_dict.get("significance_score", 0)) + significance_uplift, 1)
+        )
+    except Exception:
         pass
     try:
         scores_dict["clarity_score"] = min(10, round(float(scores_dict.get("clarity_score", 0)) + clarity_uplift, 1))
-    except:
+    except Exception:
         pass
 
     return {
         "coverage": round(coverage, 2),
         "novelty_uplift": novelty_uplift,
         "significance_uplift": significance_uplift,
-        "clarity_uplift": clarity_uplift
+        "clarity_uplift": clarity_uplift,
     }
 
-#############################################################
-# GPT REVIEW (STRICT)
-#############################################################
-def gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice, cite_m):
 
-    combined_abstracts = "\n\n".join(
-        [f"PAPER {i+1}:\nTITLE: {t}\nABSTRACT:\n{a}"
-         for i, (t, a) in enumerate(zip(top10_titles, top10_abstracts))]
-    )
+#############################################################
+# GPT REVIEW (SIGNALS-FIRST) + SHORTER CONTEXT + JSON MODE
+#############################################################
+def _truncate(text, max_chars=1200):
+    t = (text or "").strip()
+    if len(t) <= max_chars:
+        return t
+    return t[: max_chars - 20].rstrip() + " ...[truncated]"
+
+
+def gpt_review_signals(title, gap, refs, top10_titles, top10_abstracts, style_choice, cite_m):
+    # Keep context smaller to avoid truncated JSON outputs
+    blocks = []
+    for i, (t, a) in enumerate(zip(top10_titles, top10_abstracts)):
+        blocks.append(
+            f"PAPER {i+1}:\nTITLE: {t}\nABSTRACT (truncated):\n{_truncate(a, 900)}"
+        )
+    combined_abstracts = "\n\n".join(blocks)
+
+    # JSON schema we expect (keep minimal and stable)
+    expected = {
+        "signals": {
+            "clear_point_of_departure": False,
+            "explicit_missing_mechanism": False,
+            "explicit_missing_validation_or_evaluation": False,
+            "explicit_boundary_or_scope": False,
+            "explicit_contribution_claim": False,
+            "has_evaluation_design": False,
+            "has_metrics_or_measures": False,
+            "has_stakeholder_or_practical_impact": False,
+            "has_generalisability_or_scalability": False,
+            "clarity_good_structure": False,
+            "clarity_defines_terms": False,
+            "clarity_low_ambiguity": False,
+        },
+        "evidence_papers": {
+            "overlap": [],     # list of paper numbers
+            "supporting": [],  # list of paper numbers
+            "missing": [],     # list of paper numbers
+        },
+        "good_points": [],
+        "improvements": [],
+        "novelty_comment": "",
+        "significance_comment": "",
+        "citation_comment": "",
+        "clarity_comment": "",
+        "citation_score": 0,  # GPT's view, later blended
+    }
 
     prompt = f"""
 You are a senior academic reviewer writing in the style of {style_choice}.
-Evaluate the STUDENT GAP only. Do not rewrite it.
+Evaluate ONLY the STUDENT GAP. Do not rewrite it.
 
-Return STRICT JSON ONLY:
-{{
-  "novelty_score": 0,
-  "significance_score": 0,
-  "clarity_score": 0,
-  "citation_score": 0,
-  "good_points": [],
-  "improvements": [],
-  "novelty_comment": "",
-  "significance_comment": "",
-  "citation_comment": "",
-  "evidence_papers": {{
-    "overlap": [],
-    "supporting": [],
-    "missing": []
-  }}
-}}
+Return STRICT JSON ONLY with this exact structure and keys. Do not add extra keys.
+If uncertain, keep booleans as false.
 
-SCORING RULES:
-- 8–10 extremely rare and only for publication-ready work.
-- Typical student gaps: 3–6.
-- Cite paper numbers when claiming overlap.
+JSON TEMPLATE:
+{json.dumps(expected, ensure_ascii=False)}
 
-CITATION METRICS:
+SCORING/LOGIC RULES:
+- Do NOT output novelty_score or significance_score. The system will compute them.
+- You MUST justify overlap/support/missing with paper numbers (1-10) based on TOP-10 abstracts.
+- Set signal booleans to true ONLY if the STUDENT GAP explicitly contains that element.
+
+CITATION METRICS (objective):
 {json.dumps(cite_m, ensure_ascii=False)}
 
 STUDENT TITLE:
@@ -437,36 +503,171 @@ REFERENCES:
 
 TOP-10 ABSTRACTS:
 {combined_abstracts}
-"""
+""".strip()
 
-    response = client.chat.completions.create(
-        model="gpt-4.1",
-        temperature=0,
-        max_tokens=2500,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    raw = response.choices[0].message.content
-
+    # Try JSON mode if supported by the model/endpoint; fallback if not.
+    raw = ""
     try:
-        return json.loads(raw)
-    except:
-        cleaned = raw[raw.find("{"): raw.rfind("}") + 1]
+        response = client.chat.completions.create(
+            model="gpt-4.1",
+            temperature=0,
+            max_tokens=2200,
+            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.choices[0].message.content
+        return json.loads(raw), raw
+    except Exception:
+        # fallback: no response_format
         try:
-            return json.loads(cleaned)
-        except:
-            return {
-                "novelty_score": 0,
-                "significance_score": 0,
-                "clarity_score": 0,
-                "citation_score": 0,
-                "good_points": [],
-                "improvements": [],
-                "novelty_comment": "",
-                "significance_comment": "",
-                "citation_comment": "",
-                "evidence_papers": {"overlap": [], "supporting": [], "missing": []}
-            }
+            response = client.chat.completions.create(
+                model="gpt-4.1",
+                temperature=0,
+                max_tokens=2200,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = response.choices[0].message.content
+            # robust extraction of JSON object
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                return json.loads(raw[start : end + 1]), raw
+            return expected, raw
+        except Exception:
+            return expected, raw
+
+
+#############################################################
+# DETERMINISTIC NOVELTY / SIGNIFICANCE / CLARITY SCORING
+#############################################################
+def _clamp(v, lo=0.0, hi=10.0):
+    try:
+        return float(min(hi, max(lo, v)))
+    except Exception:
+        return lo
+
+
+def compute_scores_from_signals(signals_dict, evidence_papers, gap_text):
+    s = signals_dict or {}
+    ev = evidence_papers or {"overlap": [], "supporting": [], "missing": []}
+
+    overlap_n = len(ev.get("overlap", []) or [])
+    missing_n = len(ev.get("missing", []) or [])
+
+    # Novelty rubric (0-10)
+    novelty = 2.0
+    breakdown_n = []
+
+    if s.get("clear_point_of_departure"):
+        novelty += 1.8
+        breakdown_n.append("+1.8 clear point of departure")
+    if s.get("explicit_missing_mechanism"):
+        novelty += 2.0
+        breakdown_n.append("+2.0 explicit missing mechanism")
+    if s.get("explicit_missing_validation_or_evaluation"):
+        novelty += 1.4
+        breakdown_n.append("+1.4 explicit missing validation/evaluation")
+    if s.get("explicit_boundary_or_scope"):
+        novelty += 1.0
+        breakdown_n.append("+1.0 explicit boundary/scope")
+    if s.get("explicit_contribution_claim"):
+        novelty += 1.0
+        breakdown_n.append("+1.0 explicit contribution claim")
+
+    # Evidence adjustment: many overlaps reduce novelty; missing papers increase confidence of novelty claim
+    if overlap_n >= 3:
+        novelty -= 1.0
+        breakdown_n.append("-1.0 high overlap (>=3 papers)")
+    elif overlap_n == 2:
+        novelty -= 0.6
+        breakdown_n.append("-0.6 moderate overlap (2 papers)")
+    elif overlap_n == 1:
+        novelty -= 0.3
+        breakdown_n.append("-0.3 some overlap (1 paper)")
+
+    if missing_n >= 3:
+        novelty += 0.6
+        breakdown_n.append("+0.6 multiple missing papers (>=3)")
+    elif missing_n == 2:
+        novelty += 0.4
+        breakdown_n.append("+0.4 missing papers (2)")
+    elif missing_n == 1:
+        novelty += 0.2
+        breakdown_n.append("+0.2 missing papers (1)")
+
+    # Soft genericity penalty
+    gp = genericity_penalty(gap_text)
+    if gp["novelty_penalty"] > 0:
+        novelty -= gp["novelty_penalty"]
+        breakdown_n.append(f"-{gp['novelty_penalty']:.1f} genericity penalty")
+
+    novelty = _clamp(round(novelty, 1))
+
+    # Significance rubric (0-10)
+    significance = 2.0
+    breakdown_s = []
+
+    if s.get("has_evaluation_design"):
+        significance += 2.2
+        breakdown_s.append("+2.2 has evaluation design")
+    if s.get("has_metrics_or_measures"):
+        significance += 1.2
+        breakdown_s.append("+1.2 has metrics/measures")
+    if s.get("has_stakeholder_or_practical_impact"):
+        significance += 1.4
+        breakdown_s.append("+1.4 stakeholder/practical impact")
+    if s.get("has_generalisability_or_scalability"):
+        significance += 1.0
+        breakdown_s.append("+1.0 generalisability/scalability")
+    if s.get("explicit_boundary_or_scope"):
+        significance += 0.6
+        breakdown_s.append("+0.6 clear scope supports feasibility")
+
+    # If no evaluation design at all, significance should stay low
+    if not s.get("has_evaluation_design"):
+        significance -= 0.6
+        breakdown_s.append("-0.6 no evaluation design")
+
+    # Soft genericity penalty
+    if gp["significance_penalty"] > 0:
+        significance -= gp["significance_penalty"]
+        breakdown_s.append(f"-{gp['significance_penalty']:.1f} genericity penalty")
+
+    significance = _clamp(round(significance, 1))
+
+    # Clarity rubric (0-10)
+    clarity = 2.0
+    breakdown_c = []
+    if s.get("clarity_good_structure"):
+        clarity += 2.2
+        breakdown_c.append("+2.2 good structure")
+    if s.get("clarity_defines_terms"):
+        clarity += 1.6
+        breakdown_c.append("+1.6 defines terms")
+    if s.get("clarity_low_ambiguity"):
+        clarity += 1.8
+        breakdown_c.append("+1.8 low ambiguity")
+
+    # If the gap has explicit boundary/scope, clarity benefits
+    if s.get("explicit_boundary_or_scope"):
+        clarity += 0.8
+        breakdown_c.append("+0.8 clear boundary/scope")
+
+    clarity = _clamp(round(clarity, 1))
+
+    return {
+        "novelty_score": novelty,
+        "significance_score": significance,
+        "clarity_score": clarity,
+        "breakdown": {
+            "novelty": breakdown_n,
+            "significance": breakdown_s,
+            "clarity": breakdown_c,
+            "genericity": gp,
+            "evidence_counts": {"overlap_n": overlap_n, "missing_n": missing_n},
+        },
+    }
+
 
 #############################################################
 # INPUT BOXES
@@ -485,8 +686,9 @@ refs = st.text_area("", height=200, placeholder="Paste APA references here")
 #############################################################
 if st.button("Run Evaluation"):
     with st.spinner("Processing..."):
-
-        q_vec = embed_query(f"{title} {gap} {refs}")
+        # Reduce retrieval noise: do NOT let references dominate similarity
+        # (title+gap repeated acts as weight)
+        q_vec = embed_query(f"{title}\n{gap}\n{title}\n{gap}")
         sims = vector_similarity(q_vec, embeddings)
         df_docs["similarity"] = sims
 
@@ -499,22 +701,50 @@ if st.button("Run Evaluation"):
             row = df_scopus[df_scopus["Title"] == t]
             apa_list.append(build_apa(row.iloc[0]) if len(row) else f"{t} (metadata not found)")
 
-        # Objective citation metrics + blended citation score
+        # Objective citation metrics + objective citation score
         cite_m = citation_metrics(refs, top10)
         cite_obj = citation_score_objective(cite_m)
 
-        # GPT review
-        gpt_out = gpt_review(title, gap, refs, top10_titles, top10_abstracts, style_choice, cite_m)
+        # GPT review -> signals + evidence + comments
+        gpt_out, gpt_raw = gpt_review_signals(title, gap, refs, top10_titles, top10_abstracts, style_choice, cite_m)
+        if show_debug:
+            st.session_state["last_gpt_raw"] = gpt_raw
 
-        # Blend citation score (objective dominates)
+        # Deterministic novelty/significance/clarity from signals
+        signals = (gpt_out or {}).get("signals", {}) or {}
+        evidence_papers = (gpt_out or {}).get("evidence_papers", {}) or {}
+        computed = compute_scores_from_signals(signals, evidence_papers, gap)
+
+        # Use deterministic scores
+        final_scores = {
+            "novelty_score": computed["novelty_score"],
+            "significance_score": computed["significance_score"],
+            "clarity_score": computed["clarity_score"],
+        }
+
+        # Citation score is still blended (objective dominates)
         try:
-            cite_gpt = float(gpt_out.get("citation_score", 0))
-        except:
+            cite_gpt = float((gpt_out or {}).get("citation_score", 0))
+        except Exception:
             cite_gpt = 0.0
-        gpt_out["citation_score"] = round(0.6 * cite_obj + 0.4 * cite_gpt, 1)
+        final_scores["citation_score"] = round(0.6 * cite_obj + 0.4 * cite_gpt, 1)
+
+        # Attach comments, good_points, improvements, evidence
+        final_payload = {
+            **final_scores,
+            "good_points": (gpt_out or {}).get("good_points", []) or [],
+            "improvements": (gpt_out or {}).get("improvements", []) or [],
+            "novelty_comment": (gpt_out or {}).get("novelty_comment", "") or "",
+            "significance_comment": (gpt_out or {}).get("significance_comment", "") or "",
+            "citation_comment": (gpt_out or {}).get("citation_comment", "") or "",
+            "clarity_comment": (gpt_out or {}).get("clarity_comment", "") or "",
+            "evidence_papers": evidence_papers,
+            "signals": signals,
+            "score_breakdown": computed.get("breakdown", {}),
+        }
 
         #############################################################
-        # REVISION COVERAGE (computed BEFORE caps so we can reclassify)
+        # REVISION COVERAGE (computed BEFORE uplift)
         #############################################################
         revision_info = {"enabled": False, "tier": "no_revision"}
 
@@ -531,33 +761,10 @@ if st.button("Run Evaluation"):
 
         tier = revision_tier(cov)
 
-        #############################################################
-        # B + D: caps first, then reassessment by tier, then uplift
-        #############################################################
-        nov_cap, sig_cap = caps_for_novelty_significance(gap)
-
-        # D: reassessment window (still bounded, not radical)
-        if tier == "major_revision":
-            nov_cap = max(nov_cap, 8)
-            sig_cap = max(sig_cap, 8)
-        elif tier == "minor_revision":
-            nov_cap = max(nov_cap, 7)
-            sig_cap = max(sig_cap, 7)
-
-        # Apply caps
-        try:
-            gpt_out["novelty_score"] = min(float(gpt_out.get("novelty_score", 0)), nov_cap)
-        except:
-            gpt_out["novelty_score"] = 0
-        try:
-            gpt_out["significance_score"] = min(float(gpt_out.get("significance_score", 0)), sig_cap)
-        except:
-            gpt_out["significance_score"] = 0
-
-        # Apply deterministic uplift AFTER reassessment caps
+        # Apply deterministic revision uplift after computed scores
         uplift_info = {"coverage": round(cov, 2), "novelty_uplift": 0, "significance_uplift": 0, "clarity_uplift": 0}
         if revision_mode and tier in ["major_revision", "minor_revision"]:
-            uplift_info = apply_revision_uplift(gpt_out, cov)
+            uplift_info = apply_revision_uplift(final_payload, cov)
 
         revision_info = {
             "enabled": revision_mode and ("prev_run" in st.session_state),
@@ -566,8 +773,7 @@ if st.button("Run Evaluation"):
             "keywords": prev_keywords,
             "found": found,
             "missing": missing,
-            "caps": {"novelty_cap": nov_cap, "significance_cap": sig_cap},
-            "uplifts": uplift_info
+            "uplifts": uplift_info,
         }
 
         # Store current run for next attempt
@@ -576,14 +782,15 @@ if st.button("Run Evaluation"):
             "gap": gap,
             "refs": refs,
             "scores": {
-                "novelty": gpt_out.get("novelty_score", 0),
-                "significance": gpt_out.get("significance_score", 0),
-                "clarity": gpt_out.get("clarity_score", 0),
-                "citation": gpt_out.get("citation_score", 0),
+                "novelty": final_payload.get("novelty_score", 0),
+                "significance": final_payload.get("significance_score", 0),
+                "clarity": final_payload.get("clarity_score", 0),
+                "citation": final_payload.get("citation_score", 0),
             },
-            "improvements": gpt_out.get("improvements", []),
-            "good_points": gpt_out.get("good_points", []),
-            "cite_metrics": cite_m
+            "improvements": final_payload.get("improvements", []),
+            "good_points": final_payload.get("good_points", []),
+            "cite_metrics": cite_m,
+            "signals": final_payload.get("signals", {}),
         }
 
         #############################################################
@@ -600,64 +807,90 @@ if st.button("Run Evaluation"):
         </div>
         """
 
-        col1.markdown(card_html.format(title="Novelty", value=f"{gpt_out.get('novelty_score', 0)}/10"), unsafe_allow_html=True)
-        col2.markdown(card_html.format(title="Significance", value=f"{gpt_out.get('significance_score', 0)}/10"), unsafe_allow_html=True)
-        col3.markdown(card_html.format(title="Clarity", value=f"{gpt_out.get('clarity_score', 0)}/10"), unsafe_allow_html=True)
-        col4.markdown(card_html.format(title="Citation Quality", value=f"{gpt_out.get('citation_score', 0)}/10"), unsafe_allow_html=True)
+        col1.markdown(
+            card_html.format(title="Novelty", value=f"{final_payload.get('novelty_score', 0)}/10"),
+            unsafe_allow_html=True,
+        )
+        col2.markdown(
+            card_html.format(title="Significance", value=f"{final_payload.get('significance_score', 0)}/10"),
+            unsafe_allow_html=True,
+        )
+        col3.markdown(
+            card_html.format(title="Clarity", value=f"{final_payload.get('clarity_score', 0)}/10"),
+            unsafe_allow_html=True,
+        )
+        col4.markdown(
+            card_html.format(title="Citation Quality", value=f"{final_payload.get('citation_score', 0)}/10"),
+            unsafe_allow_html=True,
+        )
 
         #############################################################
         # RESULTS TABS
         #############################################################
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📚 Top 10 Literature",
-            "⭐ Good Points",
-            "🚧 Improvements",
-            "🔎 Reviewer Comments",
-            "📑 APA References"
-        ])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(
+            [
+                "📚 Top 10 Literature",
+                "⭐ Good Points",
+                "🚧 Improvements",
+                "🔎 Reviewer Comments",
+                "📑 APA References",
+            ]
+        )
 
         with tab1:
             cols = [c for c in ["Title", "Year", "DOI", "similarity"] if c in top10.columns]
             st.write(top10[cols])
 
         with tab2:
-            for p in gpt_out.get("good_points", []):
+            for p in final_payload.get("good_points", []):
                 st.write("•", p)
 
         with tab3:
-            for p in gpt_out.get("improvements", []):
+            for p in final_payload.get("improvements", []):
                 st.write("•", p)
 
         with tab4:
             st.write("### Novelty Comment")
-            st.write(gpt_out.get("novelty_comment", ""))
+            st.write(final_payload.get("novelty_comment", ""))
 
             st.write("### Significance Comment")
-            st.write(gpt_out.get("significance_comment", ""))
+            st.write(final_payload.get("significance_comment", ""))
+
+            st.write("### Clarity Comment")
+            st.write(final_payload.get("clarity_comment", ""))
 
             st.write("### Citation Comment")
-            st.write(gpt_out.get("citation_comment", ""))
+            st.write(final_payload.get("citation_comment", ""))
 
             st.write("### Revision reassessment (B + D)")
             st.write(f"Revision tier: **{revision_info.get('tier')}**")
             st.write(f"Keyword coverage: **{revision_info.get('coverage')}**")
-            st.write("Caps used:", revision_info.get("caps", {}))
             st.write("Uplifts applied:", revision_info.get("uplifts", {}))
 
             if show_debug:
+                st.write("### Deterministic scoring signals")
+                st.json(final_payload.get("signals", {}))
+
+                st.write("### Deterministic scoring breakdown")
+                st.json(final_payload.get("score_breakdown", {}))
+
+                st.write("### Evidence (Paper numbers)")
+                st.json(final_payload.get("evidence_papers", {}))
+
+                st.write("### Citation Metrics (objective)")
+                st.json(cite_m)
+                st.write("Objective citation score (0–9):", cite_obj)
+
+                st.write("### GPT raw output (last call)")
+                st.write(st.session_state.get("last_gpt_raw", ""))
+
+                st.write("### Revision keyword diagnostics")
                 st.write("Keywords extracted from previous improvements:")
                 st.write(revision_info.get("keywords", []))
                 st.write("Found in revised gap:")
                 st.write(revision_info.get("found", []))
                 st.write("Still missing:")
                 st.write(revision_info.get("missing", []))
-
-                st.write("### Evidence (Paper numbers)")
-                st.json(gpt_out.get("evidence_papers", {}))
-
-                st.write("### Citation Metrics (objective)")
-                st.json(cite_m)
-                st.write("Objective citation score (0–9):", cite_obj)
 
         with tab5:
             st.subheader("APA References")
